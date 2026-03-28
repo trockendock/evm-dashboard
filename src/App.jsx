@@ -1186,12 +1186,63 @@ export default function EVMDashboardMultiProject() {
     return { bac, ev, ac, pv, sv, cv, spi, cpi, eac, etc, vac, tcpi, progress, bacH, evH, acH, pvH, avgRate, originalBac };
   }, [epics, features, hasRates, projectRates, defaultRateId, pvMethod, milestones, reportingDate, activeBaseline]);
 
+  // ---- Timeline Projection ----
+  const timelineProjection = useMemo(() => {
+    const plannedEnd = projectSettings.endDate ? new Date(projectSettings.endDate + 'T00:00:00') : null;
+    const projectStart = projectSettings.startDate ? new Date(projectSettings.startDate + 'T00:00:00') : null;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+
+    // Method A: SPI-based (classic EVM)
+    const plannedDays = (plannedEnd && projectStart) ? (plannedEnd - projectStart) / 86400000 : null;
+    const spiEnd = (plannedDays && evmMetrics.spi > 0.01 && projectStart)
+      ? new Date(projectStart.getTime() + (plannedDays / evmMetrics.spi) * 86400000) : null;
+
+    // Method B: PERT/FTE-based (bottom-up, 5-day work week)
+    const hpw = projectSettings.hoursPerWeek || 40;
+    const remainingH = Math.max(evmMetrics.bacH - evmMetrics.evH, 0);
+    const activeFte = epics.filter(e => e.status !== 'Done').reduce((s, e) => s + (e.pertFte || 1), 0) || 1;
+    const remainingWeeks = remainingH / (hpw * activeFte);
+    const fteEnd = new Date(today.getTime() + remainingWeeks * 7 * 86400000);
+
+    // Delays in days
+    const spiDelay = (spiEnd && plannedEnd) ? Math.round((spiEnd - plannedEnd) / 86400000) : null;
+    const fteDelay = plannedEnd ? Math.round((fteEnd - plannedEnd) / 86400000) : null;
+
+    // Velocity for S-curve projection
+    const elapsed = projectStart ? (today - projectStart) / 86400000 : 0;
+    const bac = hasRates ? evmMetrics.bac : evmMetrics.bacH;
+    const ev = hasRates ? evmMetrics.ev : evmMetrics.evH;
+    const evPerDay = elapsed > 0 ? ev / elapsed : 0;
+
+    return { plannedEnd, projectStart, today, spiEnd, spiDelay, fteEnd, fteDelay, remainingH, activeFte, remainingWeeks, evPerDay, bac, ev };
+  }, [projectSettings, evmMetrics, epics, hasRates]);
+
   // ---- Chart Data ----
   const sCurveData = useMemo(() => {
     const points = generateTimelinePoints(epics, milestones, projectSettings);
     if (points.length === 0) return [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    // Extend timeline if projections go beyond current range
+    const maxProjection = Math.max(
+      timelineProjection.spiEnd?.getTime() || 0,
+      timelineProjection.fteEnd?.getTime() || 0,
+      timelineProjection.plannedEnd?.getTime() || 0
+    );
+    const lastPoint = points[points.length - 1];
+    if (maxProjection > lastPoint.getTime()) {
+      let d = new Date(lastPoint);
+      while (d.getTime() < maxProjection) {
+        d = new Date(d.getTime() + 7 * 86400000);
+        points.push(new Date(d));
+      }
+    }
+
+    // Current EV for projection baseline
+    const currentEv = timelineProjection.ev;
+    const evPerDay = timelineProjection.evPerDay;
+    const bac = timelineProjection.bac;
 
     return points.map(date => {
       const dateStr = date.toISOString().split('T')[0];
@@ -1236,6 +1287,13 @@ export default function EVMDashboardMultiProject() {
         acAtDate = hasRates ? acH * (evmMetrics.avgRate || 1) : acH;
       }
 
+      // EV projection (from today forward, dashed line)
+      let evProjection = null;
+      if (date >= today && evPerDay > 0) {
+        const daysFromToday = (date - today) / 86400000;
+        evProjection = Math.min(currentEv + evPerDay * daysFromToday, bac);
+      }
+
       return {
         date: date.getTime(),
         dateLabel: date.toLocaleDateString('de-CH', { day: '2-digit', month: 'short' }),
@@ -1243,11 +1301,12 @@ export default function EVMDashboardMultiProject() {
         pvMilestone: msPv,
         ev: evAtDate,
         ac: acAtDate,
+        evProjection,
         bac: evmMetrics.bac,
         bacOriginal: evmMetrics.originalBac,
       };
     });
-  }, [epics, features, milestones, projectSettings, projectRates, defaultRateId, hasRates, evmMetrics.bac, evmMetrics.avgRate, evmMetrics.originalBac]);
+  }, [epics, features, milestones, projectSettings, projectRates, defaultRateId, hasRates, evmMetrics.bac, evmMetrics.avgRate, evmMetrics.originalBac, timelineProjection]);
 
   const filteredEpics = useMemo(() => {
     if (statusFilter === 'all') return epics;
@@ -1495,6 +1554,99 @@ export default function EVMDashboardMultiProject() {
                   </div>
                 </div>
 
+                {/* ====== ZEITPROGNOSE CARD ====== */}
+                {projectSettings.startDate && projectSettings.endDate ? (
+                  <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                    <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                      <Calendar className="w-5 h-5 text-blue-600" />Zeitprognose
+                    </h3>
+                    {evmMetrics.progress === 0 ? (
+                      <p className="text-sm text-slate-400">Noch keine Fortschrittsdaten vorhanden.</p>
+                    ) : evmMetrics.progress >= 1 ? (
+                      <p className="text-sm text-emerald-600 font-medium">Projekt abgeschlossen.</p>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-5">
+                          {/* Geplantes Ende */}
+                          <div className="text-center p-4 rounded-lg bg-slate-50">
+                            <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Geplantes Ende</p>
+                            <p className="text-xl font-bold text-slate-800">{formatDate(projectSettings.endDate)}</p>
+                            <p className="text-xs text-slate-400 mt-1">Projekt-Initiative</p>
+                          </div>
+                          {/* SPI-Prognose */}
+                          <div className={`text-center p-4 rounded-lg ${timelineProjection.spiDelay == null ? 'bg-slate-50' : timelineProjection.spiDelay <= 0 ? 'bg-emerald-50' : timelineProjection.spiDelay <= 14 ? 'bg-amber-50' : 'bg-rose-50'}`}>
+                            <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">SPI-Prognose</p>
+                            <p className="text-xl font-bold text-slate-800">
+                              {timelineProjection.spiEnd ? formatDate(timelineProjection.spiEnd.toISOString().split('T')[0]) : 'n/a'}
+                            </p>
+                            {timelineProjection.spiDelay != null && (
+                              <p className={`text-xs mt-1 font-medium ${timelineProjection.spiDelay <= 0 ? 'text-emerald-600' : timelineProjection.spiDelay <= 14 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                {timelineProjection.spiDelay <= 0 ? `${Math.abs(timelineProjection.spiDelay)}d voraus` : `${timelineProjection.spiDelay}d Verzug`}
+                              </p>
+                            )}
+                            <p className="text-xs text-slate-400 mt-0.5">SPI: {evmMetrics.spi.toFixed(2)}</p>
+                          </div>
+                          {/* FTE-Prognose */}
+                          <div className={`text-center p-4 rounded-lg ${timelineProjection.fteDelay == null ? 'bg-slate-50' : timelineProjection.fteDelay <= 0 ? 'bg-emerald-50' : timelineProjection.fteDelay <= 14 ? 'bg-amber-50' : 'bg-rose-50'}`}>
+                            <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">FTE-Prognose</p>
+                            <p className="text-xl font-bold text-slate-800">
+                              {formatDate(timelineProjection.fteEnd.toISOString().split('T')[0])}
+                            </p>
+                            {timelineProjection.fteDelay != null && (
+                              <p className={`text-xs mt-1 font-medium ${timelineProjection.fteDelay <= 0 ? 'text-emerald-600' : timelineProjection.fteDelay <= 14 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                {timelineProjection.fteDelay <= 0 ? `${Math.abs(timelineProjection.fteDelay)}d voraus` : `${timelineProjection.fteDelay}d Verzug`}
+                              </p>
+                            )}
+                            <p className="text-xs text-slate-400 mt-0.5">{timelineProjection.activeFte} FTE aktiv</p>
+                          </div>
+                        </div>
+                        {/* Mini Timeline */}
+                        {(() => {
+                          const dates = [timelineProjection.plannedEnd, timelineProjection.spiEnd, timelineProjection.fteEnd].filter(Boolean).map(d => d.getTime());
+                          const start = timelineProjection.projectStart?.getTime() || Math.min(...dates);
+                          const end = Math.max(...dates);
+                          const range = end - start || 1;
+                          const pos = d => `${Math.max(0, Math.min(100, ((d.getTime() - start) / range) * 100))}%`;
+                          const todayPos = pos(timelineProjection.today);
+                          return (
+                            <div className="relative h-8 bg-slate-100 rounded-full overflow-visible mx-2">
+                              {/* Progress fill */}
+                              <div className="absolute inset-y-0 left-0 bg-blue-100 rounded-full" style={{ width: todayPos }} />
+                              {/* Today marker */}
+                              <div className="absolute top-1/2 -translate-y-1/2 w-0.5 h-6 bg-slate-400" style={{ left: todayPos }} title="Heute">
+                                <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] text-slate-400 whitespace-nowrap">Heute</span>
+                              </div>
+                              {/* Planned end */}
+                              <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-slate-400 border-2 border-white shadow" style={{ left: pos(timelineProjection.plannedEnd) }} title={`Geplant: ${formatDate(projectSettings.endDate)}`} />
+                              {/* SPI projection */}
+                              {timelineProjection.spiEnd && (
+                                <div className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow ${timelineProjection.spiDelay <= 0 ? 'bg-emerald-500' : timelineProjection.spiDelay <= 14 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ left: pos(timelineProjection.spiEnd) }} title="SPI-Prognose" />
+                              )}
+                              {/* FTE projection */}
+                              <div className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow ${timelineProjection.fteDelay <= 0 ? 'bg-emerald-500' : timelineProjection.fteDelay <= 14 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ left: pos(timelineProjection.fteEnd) }} title="FTE-Prognose" />
+                            </div>
+                          );
+                        })()}
+                        {/* Context info */}
+                        <div className="flex gap-6 mt-4 text-xs text-slate-400">
+                          <span>Restaufwand: {timelineProjection.remainingH.toFixed(0)}h</span>
+                          <span>Restdauer: {timelineProjection.remainingWeeks.toFixed(1)} Wochen</span>
+                          <span>Aktive FTE: {timelineProjection.activeFte}</span>
+                          <span className="ml-auto flex items-center gap-3">
+                            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-400" />Geplant</span>
+                            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" />SPI</span>
+                            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-orange-500" />FTE</span>
+                          </span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                    <p className="text-sm text-slate-400 flex items-center gap-2"><Calendar className="w-4 h-4" />Zeitprognose: Bitte Start- und Enddatum in den Einstellungen setzen.</p>
+                  </div>
+                )}
+
                 <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
                   <h3 className="text-xl font-semibold mb-6">S-Kurven Projektion</h3>
                   <ResponsiveContainer width="100%" height={400}>
@@ -1508,9 +1660,22 @@ export default function EVMDashboardMultiProject() {
                       {evmMetrics.originalBac && evmMetrics.originalBac !== evmMetrics.bac && (
                         <ReferenceLine y={evmMetrics.originalBac} stroke="#f59e0b" strokeDasharray="8 4" label={{ value: `Baseline: ${hasRates ? formatCurrency(evmMetrics.originalBac, currency) : evmMetrics.originalBac + 'h'}`, fill: '#f59e0b', fontSize: 11 }} />
                       )}
+                      {/* Today vertical line */}
+                      {sCurveData.length > 0 && (() => {
+                        const todayMs = timelineProjection.today.getTime();
+                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - todayMs) < Math.abs(c.date - todayMs) ? p : c);
+                        return <ReferenceLine x={closest.dateLabel} stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Heute', fill: '#94a3b8', fontSize: 11, position: 'top' }} />;
+                      })()}
+                      {/* Planned end vertical line */}
+                      {timelineProjection.plannedEnd && sCurveData.length > 0 && (() => {
+                        const endMs = timelineProjection.plannedEnd.getTime();
+                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - endMs) < Math.abs(c.date - endMs) ? p : c);
+                        return <ReferenceLine x={closest.dateLabel} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: 'Geplant', fill: '#f59e0b', fontSize: 11, position: 'top' }} />;
+                      })()}
                       <Area type="monotone" dataKey="pvTime" name="PV (Zeitbasiert)" fill="#3b82f620" stroke="#3b82f6" strokeWidth={2} />
                       {milestones.length > 0 && <Line type="monotone" dataKey="pvMilestone" name="PV (Meilensteine)" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="5 5" dot={false} />}
                       <Line type="monotone" dataKey="ev" name="EV (Earned)" stroke="#10b981" strokeWidth={2} dot={false} connectNulls={false} />
+                      <Line type="monotone" dataKey="evProjection" name="EV (Prognose)" stroke="#10b981" strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls={false} />
                       <Line type="monotone" dataKey="ac" name="AC (Actual)" stroke="#f43f5e" strokeWidth={2} dot={false} connectNulls={false} />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -2411,6 +2576,7 @@ export default function EVMDashboardMultiProject() {
                     { title: 'Prognosen', items: [
                       { term: 'EAC', full: 'Estimate at Completion', desc: 'Prognostizierte Gesamtkosten: BAC / CPI. Schätzt auf Basis der bisherigen Kosteneffizienz, was das Projekt am Ende tatsächlich kosten wird.' },
                       { term: 'ETC', full: 'Estimate to Complete', desc: 'Verbleibender Aufwand: EAC − AC. Zeigt, wie viel Budget oder Zeit noch benötigt wird, um das Projekt abzuschliessen.' },
+                      { term: 'Zeitprognose', full: 'Projiziertes Enddatum', desc: 'Zwei Methoden: SPI-Prognose berechnet das Enddatum als geplante Dauer ÷ SPI (Schedule Performance Index). FTE-Prognose nutzt den Restaufwand (BAC−EV in Stunden) geteilt durch Kapazität (Stunden/Woche × aktive FTEs bei 5-Tage-Woche). Beide werden dem geplanten Enddatum gegenübergestellt.' },
                     ]},
                     { title: 'S-Kurve', items: [
                       { term: 'S-Kurve', full: 'Kumulative Projektion', desc: 'Grafische Darstellung von PV, EV und AC über die Zeit. Der typische S-förmige Verlauf entsteht durch langsamen Start, steilen Anstieg in der Mitte und Abflachung am Ende.' },

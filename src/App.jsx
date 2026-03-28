@@ -2433,6 +2433,7 @@ export default function EVMDashboardMultiProject() {
                     ]},
                     { title: 'Baseline & Scope', items: [
                       { term: 'Baseline', full: 'Referenz-Snapshot', desc: 'Ein gespeicherter Zustand aller Epics zu einem bestimmten Zeitpunkt. Dient als Vergleichsbasis — neue Epics nach der Baseline werden als Scope-Änderung erkannt.' },
+                      { term: 'Baseline Lock', full: 'Baseline-Sperre pro Epic', desc: 'Das Schloss-Symbol 🔒 auf jedem Epic steuert, ob dessen Baseline-Schätzung beim nächsten "Baseline setzen" überschrieben wird. Gesperrt (🔒): der baselineEstimate bleibt unverändert, auch wenn currentEstimate sich ändert. Entsperrt (🔓): beim nächsten Baseline-Snapshot wird der aktuelle Aufwand als neue Basis übernommen. Gesperrte Epics können nicht gelöscht werden. Typischer Einsatz: Ursprünglicher Scope wird gesperrt, neue Epics bleiben entsperrt — so ist im EVM immer klar, was ursprünglich geplant war und was nachträglich dazugekommen ist.' },
                       { term: 'Scope Change', full: 'Umfangsänderung', desc: 'Wenn nach einer Baseline neue Epics hinzukommen, ändert sich der Projektumfang. Das Dashboard zeigt die BAC-Differenz und bietet an, eine neue Baseline zu setzen.' },
                     ]},
                   ].map(section => (

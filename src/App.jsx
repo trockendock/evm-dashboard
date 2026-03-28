@@ -1390,7 +1390,7 @@ export default function EVMDashboardMultiProject() {
       )}
 
       <header className="border-b border-slate-200 bg-white/80 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4">
+        <div className="max-w-screen-2xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
@@ -1432,7 +1432,7 @@ export default function EVMDashboardMultiProject() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-screen-2xl mx-auto px-6 py-8">
         {showPortfolio ? (
           <PortfolioOverview projects={projects} projectEpicsMap={projectEpicsMap} onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }} />
         ) : (
@@ -2462,7 +2462,7 @@ export default function EVMDashboardMultiProject() {
       </main>
 
       <footer className="border-t border-slate-200 mt-12">
-        <div className="max-w-7xl mx-auto px-6 py-4 text-center text-slate-400 text-sm">
+        <div className="max-w-screen-2xl mx-auto px-6 py-4 text-center text-slate-400 text-sm">
           © Pascal Müller • EVM Dashboard
         </div>
       </footer>

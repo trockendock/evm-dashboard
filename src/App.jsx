@@ -1668,11 +1668,15 @@ export default function EVMDashboardMultiProject() {
                             </td>
                             {hasRates && (
                               <td className="px-4 py-3">
-                                <select value={epic.rateId || ''} onChange={(e) => updateIssueRate(epic.id, e.target.value)} disabled={isOffline}
-                                  className="px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-xs">
-                                  <option value="">Default ({defaultRate?.name})</option>
-                                  {projectRates.map(r => <option key={r.id} value={r.id}>{r.name} ({r.rate} {currency}/h)</option>)}
-                                </select>
+                                {features.some(f => f.epicId === epic.id) ? (
+                                  <span className="text-xs text-slate-400 italic">via Features</span>
+                                ) : (
+                                  <select value={epic.rateId || ''} onChange={(e) => updateIssueRate(epic.id, e.target.value)} disabled={isOffline}
+                                    className="px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-xs">
+                                    <option value="">Default ({defaultRate?.name})</option>
+                                    {projectRates.map(r => <option key={r.id} value={r.id}>{r.name} ({r.rate} {currency}/h)</option>)}
+                                  </select>
+                                )}
                               </td>
                             )}
                             <td className="px-4 py-3">

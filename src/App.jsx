@@ -1804,7 +1804,6 @@ export default function EVMDashboardMultiProject() {
                           {hasRates && <th className="px-3 py-2.5 text-right font-medium text-slate-600">Kosten 95%</th>}
                           {hasRates && <th className="px-3 py-2.5 text-right font-medium text-slate-600">Budget+Uplift</th>}
                           <th className="px-3 py-2.5 text-center font-medium text-slate-600">Risiko</th>
-                          <th className="px-3 py-2.5 text-center font-medium text-slate-600"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
@@ -1829,6 +1828,10 @@ export default function EVMDashboardMultiProject() {
                                     ) : <div className="w-4 flex-shrink-0" />}
                                     <span className="font-medium text-slate-900 whitespace-nowrap">{row.epic.summary || <span className="text-slate-400 italic">—</span>}</span>
                                     {row.hasFeatures && <span className="text-xs text-slate-400 ml-1">({row.featureRows.length})</span>}
+                                    <button onClick={() => { addFeature(row.epic.id); if (!expandedEpicIds.has(row.epic.id)) toggleEpicExpanded(row.epic.id); }} disabled={isOffline}
+                                      title="Feature hinzufügen" className="ml-1 p-0.5 text-slate-300 hover:text-indigo-500 rounded flex-shrink-0">
+                                      <Plus className="w-3.5 h-3.5" />
+                                    </button>
                                   </div>
                                 </td>
                                 {/* O */}
@@ -1878,14 +1881,6 @@ export default function EVMDashboardMultiProject() {
                                 {hasRates && <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{row.hasPert ? `${currency} ${Math.round(row.budgetUplift).toLocaleString('de-CH')}` : '—'}</td>}
                                 <td className="px-3 py-2.5 text-center">
                                   {row.hasPert && <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border ${risikoStyle(row.risikoklasse)}`}>{row.risikoklasse}</span>}
-                                </td>
-                                <td className="px-3 py-2.5 text-center">
-                                  {!row.hasFeatures && (
-                                    <button onClick={() => { addFeature(row.epic.id); if (!expandedEpicIds.has(row.epic.id)) toggleEpicExpanded(row.epic.id); }} disabled={isOffline}
-                                      title="Feature hinzufügen" className="p-1 text-slate-400 hover:text-indigo-600 rounded">
-                                      <Plus className="w-4 h-4" />
-                                    </button>
-                                  )}
                                 </td>
                               </tr>
 

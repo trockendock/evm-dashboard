@@ -397,7 +397,7 @@ const MetricCard = ({ title, value, subtitle, icon: Icon, trend, trendValue, sou
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-slate-600 text-sm font-medium cursor-help underline decoration-dashed decoration-slate-400 underline-offset-2" title={tooltipText}>{title}</span>
-            {source && <SourceBadge source={source} />}
+            {source === 'jira' && <SourceBadge source={source} />}
           </div>
           <p className="text-2xl font-bold text-slate-900 mt-1">{value}</p>
           {subtitle && <p className="text-slate-400 text-xs mt-1">{subtitle}</p>}
@@ -473,7 +473,7 @@ const ProjectSelector = ({ projects, currentProjectId, onSelectProject, onCreate
         <FolderOpen className="w-5 h-5 text-purple-600" />
         <div className="text-left">
           <p className="text-sm font-medium text-slate-900">{currentProject?.name || 'Projekt wählen'}</p>
-          <p className="text-xs text-slate-500">{projects.length} Projekte</p>
+          <p className="text-xs text-slate-500">{currentProject ? 'Projekt' : 'Projekt wählen'}</p>
         </div>
         <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
@@ -1236,7 +1236,7 @@ export default function EVMDashboardMultiProject() {
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
                 <GitMerge className="w-5 h-5 text-white" />
               </div>
-              <button onClick={() => setShowPortfolio(!showPortfolio)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${showPortfolio ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>Portfolio</button>
+              <button onClick={() => setShowPortfolio(!showPortfolio)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${showPortfolio ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}><BarChart3 className="w-4 h-4" />Portfolio</button>
               <ProjectSelector
                 projects={projects} currentProjectId={currentProjectId}
                 onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }}
@@ -2192,7 +2192,7 @@ export default function EVMDashboardMultiProject() {
 
       <footer className="border-t border-slate-200 mt-12">
         <div className="max-w-7xl mx-auto px-6 py-4 text-center text-slate-400 text-sm">
-          EVM Multi-Project Dashboard • {projects.length} Projekte
+          © Pascal Müller • EVM Dashboard
         </div>
       </footer>
 

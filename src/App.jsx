@@ -2569,7 +2569,7 @@ export default function EVMDashboardMultiProject() {
                       { term: 'VAC', full: 'Variance at Completion', desc: 'Prognostizierte Abweichung am Projektende: BAC − EAC. Positiv = voraussichtlich unter Budget, negativ = über Budget.' },
                     ]},
                     { title: 'Performance-Indizes', items: [
-                      { term: 'SPI', full: 'Schedule Performance Index', desc: 'Termineffizienz: EV / PV. Wert > 1 = schneller als geplant, < 1 = langsamer. Ein SPI von 0.8 bedeutet: nur 80% der geplanten Arbeit wurde geschafft.' },
+                      { term: 'SPI', full: 'Schedule Performance Index', desc: 'Termineffizienz: EV / PV. Wert > 1 = schneller als geplant, < 1 = langsamer. Ein SPI von 0.8 bedeutet: nur 80% der geplanten Arbeit wurde geschafft. Die SPI-Prognose auf dem Dashboard berechnet das projizierte Enddatum als: Startdatum + (geplante Dauer ÷ SPI).' },
                       { term: 'CPI', full: 'Cost Performance Index', desc: 'Kosteneffizienz: EV / AC. Wert > 1 = günstiger als geplant, < 1 = teurer. Ein CPI von 1.2 bedeutet: für jeden investierten Franken wurde 1.20 CHF an Wert erzielt.' },
                       { term: 'TCPI', full: 'To Complete Performance Index', desc: 'Erforderliche Effizienz für den Rest: (BAC − EV) / (BAC − AC). Zeigt, wie effizient das restliche Budget eingesetzt werden muss, um im Plan zu bleiben. Wert > 1 = schwieriger.' },
                     ]},
@@ -2583,6 +2583,9 @@ export default function EVMDashboardMultiProject() {
                       { term: 'PV-Linie', full: 'Planned Value Kurve', desc: 'Zeigt den geplanten kumulativen Wert über die gesamte Projektdauer. Kann zeitbasiert (linear) oder meilensteinbasiert berechnet werden.' },
                       { term: 'EV-Linie', full: 'Earned Value Kurve', desc: 'Zeigt den kumulativ erarbeiteten Wert bis heute. Basiert auf dem 50/50-Status der Epics an jedem Zeitpunkt.' },
                       { term: 'AC-Linie', full: 'Actual Cost Kurve', desc: 'Zeigt die kumulativen tatsächlichen Kosten bis heute. Der Zeitaufwand (Time Spent) wird linear über die Epic-Dauer verteilt.' },
+                      { term: 'EV-Prognose', full: 'Earned Value Projektion', desc: 'Gestrichelte grüne Linie ab heute. Projiziert den EV-Verlauf in die Zukunft basierend auf der bisherigen Velocity (EV pro Kalendertag seit Projektstart). Zeigt, wann BAC bei gleichbleibendem Tempo erreicht wird.' },
+                      { term: 'Heute-Linie', full: 'Vertikale Referenz', desc: 'Grau gestrichelte vertikale Linie, die den aktuellen Tag markiert. Alles links davon ist historisch, alles rechts ist Prognose.' },
+                      { term: 'Geplant-Linie', full: 'Geplantes Projektende', desc: 'Orange gestrichelte vertikale Linie am geplanten Enddatum (aus Projekteinstellungen). Dient als visueller Vergleich mit der EV-Prognose.' },
                     ]},
                     { title: 'PERT-Schätzung', items: [
                       { term: 'PERT', full: 'Program Evaluation and Review Technique', desc: 'Schätzmethode mit drei Werten: optimistisch (O), wahrscheinlich (M) und pessimistisch (P). Daraus wird ein gewichteter Erwartungswert berechnet.' },

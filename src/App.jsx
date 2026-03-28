@@ -74,12 +74,28 @@ const calcPERT = (o, m, p) => ({
   stdDev: (p - o) / 6,
 });
 
-// Effective estimate: PERT TE₉₅ wenn vorhanden, sonst currentEstimate
-const getEffectiveEstimate = (epic) => {
+// Effective estimate: Feature-Summe > PERT TE₉₅ > currentEstimate
+// feats: optionales Array der geladenen Features (nur innerhalb der Komponente übergeben)
+const getEffectiveEstimate = (epic, feats = []) => {
+  if (feats.length > 0) {
+    const epicFeatures = feats.filter(f => f.epicId === epic.id);
+    if (epicFeatures.length > 0) {
+      const total = epicFeatures.reduce((sum, f) => {
+        const o = f.pertOptimistic, m = f.pertMostLikely, p = f.pertPessimistic;
+        if (o != null && m != null && p != null && o > 0 && m > 0 && p > 0) {
+          const te = (o + 4 * m + p) / 6;
+          const sigma = (p - o) / 6;
+          return sum + te + 2 * sigma;
+        }
+        return sum;
+      }, 0);
+      if (total > 0) return Math.round(total * 10) / 10;
+    }
+  }
   const o = epic.pertOptimistic;
   const m = epic.pertMostLikely;
   const p = epic.pertPessimistic;
-  if (o > 0 && m > 0 && p > 0) {
+  if (o != null && m != null && p != null && o > 0 && m > 0 && p > 0) {
     const te = (o + 4 * m + p) / 6;
     const sigma = (p - o) / 6;
     return Math.round((te + 2 * sigma) * 10) / 10; // TE₉₅, 1 Dezimalstelle
@@ -155,6 +171,32 @@ const dbInsertEpics = async (epics) => {
   const { data, error } = await supabase.from('epics').insert(epics).select();
   if (error) throw error;
   return data;
+};
+
+const dbLoadFeatures = async (epicIds) => {
+  if (!supabase || !epicIds || epicIds.length === 0) return [];
+  const { data, error } = await supabase.from('features').select('*').in('epic_id', epicIds).order('sort_order');
+  if (error) throw error;
+  return data;
+};
+
+const dbInsertFeature = async (feature) => {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from('features').insert(feature).select().single();
+  if (error) throw error;
+  return data;
+};
+
+const dbUpdateFeature = async (id, updates) => {
+  if (!supabase) return;
+  const { error } = await supabase.from('features').update(updates).eq('id', id);
+  if (error) console.error('Feature update error:', error);
+};
+
+const dbDeleteFeature = async (id) => {
+  if (!supabase) return;
+  const { error } = await supabase.from('features').delete().eq('id', id);
+  if (error) console.error('Feature delete error:', error);
 };
 
 // ============================================
@@ -300,6 +342,31 @@ const mapEpicToDb = (updates) => {
     rateId: 'rate_id', pertOptimistic: 'pert_optimistic', pertMostLikely: 'pert_most_likely',
     pertPessimistic: 'pert_pessimistic', pertFte: 'pert_fte', pertUplift: 'pert_uplift',
     baselineId: 'baseline_id', removedFromJira: 'removed_from_jira',
+  };
+  const result = {};
+  for (const [key, val] of Object.entries(updates)) {
+    result[map[key] || key] = val;
+  }
+  return result;
+};
+
+const mapFeatureFromDb = (row) => ({
+  id: row.id,
+  epicId: row.epic_id,
+  name: row.name,
+  roleId: row.role_id || null,
+  pertOptimistic: row.pert_optimistic != null ? Number(row.pert_optimistic) : null,
+  pertMostLikely: row.pert_most_likely != null ? Number(row.pert_most_likely) : null,
+  pertPessimistic: row.pert_pessimistic != null ? Number(row.pert_pessimistic) : null,
+  fte: row.fte != null ? Number(row.fte) : 1,
+  sortOrder: row.sort_order != null ? Number(row.sort_order) : 0,
+});
+
+const mapFeatureToDb = (updates) => {
+  const map = {
+    epicId: 'epic_id', name: 'name', roleId: 'role_id',
+    pertOptimistic: 'pert_optimistic', pertMostLikely: 'pert_most_likely', pertPessimistic: 'pert_pessimistic',
+    fte: 'fte', sortOrder: 'sort_order',
   };
   const result = {};
   for (const [key, val] of Object.entries(updates)) {
@@ -473,7 +540,6 @@ const ProjectSelector = ({ projects, currentProjectId, onSelectProject, onCreate
         <FolderOpen className="w-5 h-5 text-purple-600" />
         <div className="text-left">
           <p className="text-sm font-medium text-slate-900">{currentProject?.name || 'Projekt wählen'}</p>
-          <p className="text-xs text-slate-500">{currentProject ? 'Projekt' : 'Projekt wählen'}</p>
         </div>
         <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
@@ -615,6 +681,8 @@ export default function EVMDashboardMultiProject() {
   const [baselineNotes, setBaselineNotes] = useState('');
   const [editingEpicId, setEditingEpicId] = useState(null);
   const [jiraSyncing, setJiraSyncing] = useState(false);
+  const [features, setFeatures] = useState([]);
+  const [expandedEpicIds, setExpandedEpicIds] = useState(new Set());
 
   // Load projects
   useEffect(() => {
@@ -667,24 +735,30 @@ export default function EVMDashboardMultiProject() {
     return () => { cancelled = true; };
   }, []);
 
-  // Load epics when project changes
+  // Load epics + features when project changes
   useEffect(() => {
     if (!currentProjectId) return;
     localStorage.setItem('evm_current_project', currentProjectId);
+    setFeatures([]);
+    setExpandedEpicIds(new Set());
 
-    const loadEpics = async () => {
+    const loadEpicsAndFeatures = async () => {
       try {
         const data = await dbLoadEpics(currentProjectId);
         if (data) {
           const mapped = data.map(mapEpicFromDb);
           setEpics(mapped);
           setProjectEpicsMap(prev => ({ ...prev, [currentProjectId]: mapped }));
+          // Load features for all epics
+          const epicIds = mapped.map(e => e.id);
+          const featData = await dbLoadFeatures(epicIds);
+          if (featData) setFeatures(featData.map(mapFeatureFromDb));
         }
       } catch (err) {
-        console.error('Failed to load epics:', err);
+        console.error('Failed to load epics/features:', err);
       }
     };
-    loadEpics();
+    loadEpicsAndFeatures();
   }, [currentProjectId]);
 
   // Cache to localStorage
@@ -845,6 +919,7 @@ export default function EVMDashboardMultiProject() {
     if (!epic || epic.isBaselineLocked) return;
     setEpics(prev => prev.filter(e => e.id !== epicId));
     setProjectEpicsMap(prev => ({ ...prev, [currentProjectId]: (prev[currentProjectId] || []).filter(e => e.id !== epicId) }));
+    setFeatures(prev => prev.filter(f => f.epicId !== epicId));
     await dbDeleteEpic(epicId);
   }, [epics, currentProjectId]);
 
@@ -906,13 +981,13 @@ export default function EVMDashboardMultiProject() {
   const toggleBaselineLock = (epicId) => {
     const epic = epics.find(e => e.id === epicId);
     if (!epic) return;
-    updateEpic(epicId, { isBaselineLocked: !epic.isBaselineLocked, baselineEstimate: epic.baselineEstimate || getEffectiveEstimate(epic) });
+    updateEpic(epicId, { isBaselineLocked: !epic.isBaselineLocked, baselineEstimate: epic.baselineEstimate || getEffectiveEstimate(epic, features) });
   };
 
   const lockAllBaselines = () => {
     epics.forEach(e => {
       if (!e.isBaselineLocked) {
-        updateEpic(e.id, { isBaselineLocked: true, baselineEstimate: e.baselineEstimate || getEffectiveEstimate(e) });
+        updateEpic(e.id, { isBaselineLocked: true, baselineEstimate: e.baselineEstimate || getEffectiveEstimate(e, features) });
       }
     });
   };
@@ -926,11 +1001,11 @@ export default function EVMDashboardMultiProject() {
     const now = new Date().toISOString().split('T')[0];
 
     // Calculate BAC for snapshot
-    const bacH = epics.reduce((sum, e) => sum + (e.baselineEstimate || getEffectiveEstimate(e)), 0);
+    const bacH = epics.reduce((sum, e) => sum + (e.baselineEstimate || getEffectiveEstimate(e, features)), 0);
     let bacVal = 0;
     if (hasRates) {
       epics.forEach(e => {
-        bacVal += (e.baselineEstimate || getEffectiveEstimate(e)) * getIssueRate(e, projectRates, defaultRateId);
+        bacVal += (e.baselineEstimate || getEffectiveEstimate(e, features)) * getIssueRate(e, projectRates, defaultRateId);
       });
     }
 
@@ -950,7 +1025,7 @@ export default function EVMDashboardMultiProject() {
     for (const e of epics) {
       await updateEpic(e.id, {
         isBaselineLocked: true,
-        baselineEstimate: e.baselineEstimate || getEffectiveEstimate(e),
+        baselineEstimate: e.baselineEstimate || getEffectiveEstimate(e, features),
         baselineId: blId,
       });
     }
@@ -964,11 +1039,11 @@ export default function EVMDashboardMultiProject() {
     const newEpics = epics.filter(e => !activeBaseline.epicIds.includes(e.id));
     if (newEpics.length === 0) return null;
 
-    const currentBacH = epics.reduce((sum, e) => sum + (e.baselineEstimate || getEffectiveEstimate(e)), 0);
+    const currentBacH = epics.reduce((sum, e) => sum + (e.baselineEstimate || getEffectiveEstimate(e, features)), 0);
     let currentBacVal = 0;
     if (hasRates) {
       epics.forEach(e => {
-        currentBacVal += (e.baselineEstimate || getEffectiveEstimate(e)) * getIssueRate(e, projectRates, defaultRateId);
+        currentBacVal += (e.baselineEstimate || getEffectiveEstimate(e, features)) * getIssueRate(e, projectRates, defaultRateId);
       });
     }
 
@@ -981,7 +1056,7 @@ export default function EVMDashboardMultiProject() {
       newEpicCount: newEpics.length,
       newEpics,
     };
-  }, [epics, activeBaseline, hasRates, projectRates, defaultRateId]);
+  }, [epics, features, activeBaseline, hasRates, projectRates, defaultRateId]);
 
   const updateIssueRate = useCallback((epicId, rateId) => {
     updateEpic(epicId, { rateId: rateId || undefined });
@@ -1007,6 +1082,45 @@ export default function EVMDashboardMultiProject() {
 
   const setDefaultRate = useCallback((rateId) => { updateProjectSettings({ defaultRateId: rateId }); }, [updateProjectSettings]);
 
+  // ---- Feature CRUD ----
+  const addFeature = useCallback(async (epicId) => {
+    const tempId = `feat-${Date.now()}`;
+    const sortOrder = features.filter(f => f.epicId === epicId).length;
+    const newFeature = {
+      id: tempId, epicId, name: '', roleId: null,
+      pertOptimistic: null, pertMostLikely: null, pertPessimistic: null, fte: 1, sortOrder,
+    };
+    setFeatures(prev => [...prev, newFeature]);
+    try {
+      const dbRow = await dbInsertFeature({ epic_id: epicId, name: '', fte: 1, sort_order: sortOrder });
+      if (dbRow) {
+        const mapped = mapFeatureFromDb(dbRow);
+        setFeatures(prev => prev.map(f => f.id === tempId ? mapped : f));
+      }
+    } catch (err) {
+      setFeatures(prev => prev.filter(f => f.id !== tempId));
+      console.error('Add feature error:', err);
+    }
+  }, [features]);
+
+  const updateFeature = useCallback(async (featureId, updates) => {
+    setFeatures(prev => prev.map(f => f.id === featureId ? { ...f, ...updates } : f));
+    await dbUpdateFeature(featureId, mapFeatureToDb(updates));
+  }, []);
+
+  const deleteFeature = useCallback(async (featureId) => {
+    setFeatures(prev => prev.filter(f => f.id !== featureId));
+    await dbDeleteFeature(featureId);
+  }, []);
+
+  const toggleEpicExpanded = useCallback((epicId) => {
+    setExpandedEpicIds(prev => {
+      const next = new Set(prev);
+      if (next.has(epicId)) next.delete(epicId); else next.add(epicId);
+      return next;
+    });
+  }, []);
+
   // ---- Milestone CRUD ----
   const addMilestone = useCallback(() => {
     const newMs = { id: `ms-${Date.now()}`, date: '', plannedCumulativePV: 0, notes: '' };
@@ -1023,8 +1137,8 @@ export default function EVMDashboardMultiProject() {
 
   // ---- EVM Calculations ----
   const evmMetrics = useMemo(() => {
-    const bacH = epics.reduce((sum, i) => sum + (i.baselineEstimate || getEffectiveEstimate(i)), 0);
-    const evH = epics.reduce((sum, i) => sum + (i.baselineEstimate || getEffectiveEstimate(i)) * getCompletionRate(i.status), 0);
+    const bacH = epics.reduce((sum, i) => sum + (i.baselineEstimate || getEffectiveEstimate(i, features)), 0);
+    const evH = epics.reduce((sum, i) => sum + (i.baselineEstimate || getEffectiveEstimate(i, features)) * getCompletionRate(i.status), 0);
     const acH = epics.reduce((sum, i) => sum + i.timeSpent, 0);
 
     // PV: wenn Baseline aktiv, nur Baseline-Epics für PV (neue Epics waren nicht geplant)
@@ -1042,7 +1156,7 @@ export default function EVMDashboardMultiProject() {
       bac = 0; ev = 0; ac = 0;
       epics.forEach(i => {
         const rate = getIssueRate(i, projectRates, defaultRateId);
-        const estimate = i.baselineEstimate || getEffectiveEstimate(i);
+        const estimate = i.baselineEstimate || getEffectiveEstimate(i, features);
         bac += estimate * rate;
         ev += estimate * getCompletionRate(i.status) * rate;
         ac += i.timeSpent * rate;
@@ -1068,7 +1182,7 @@ export default function EVMDashboardMultiProject() {
     const tcpi = (bac - ac) > 0 ? (bac - ev) / (bac - ac) : 0;
     const progress = bac > 0 ? ev / bac : 0;
     return { bac, ev, ac, pv, sv, cv, spi, cpi, eac, etc, vac, tcpi, progress, bacH, evH, acH, pvH, avgRate, originalBac };
-  }, [epics, hasRates, projectRates, defaultRateId, pvMethod, milestones, reportingDate, activeBaseline]);
+  }, [epics, features, hasRates, projectRates, defaultRateId, pvMethod, milestones, reportingDate, activeBaseline]);
 
   // ---- Chart Data ----
   const sCurveData = useMemo(() => {
@@ -1094,7 +1208,7 @@ export default function EVMDashboardMultiProject() {
       if (date <= today) {
         let evH = 0, acH = 0;
         for (const epic of epics) {
-          const estimate = epic.baselineEstimate || getEffectiveEstimate(epic);
+          const estimate = epic.baselineEstimate || getEffectiveEstimate(epic, features);
           const start = epic.startDate ? new Date(epic.startDate) : null;
           const end = epic.endDate ? new Date(epic.endDate) : null;
           const rate = (() => { const r = projectRates.find(r => r.id === (epic.rateId || defaultRateId)); return r ? r.rate : 0; })();
@@ -1131,7 +1245,7 @@ export default function EVMDashboardMultiProject() {
         bacOriginal: evmMetrics.originalBac,
       };
     });
-  }, [epics, milestones, projectSettings, projectRates, defaultRateId, hasRates, evmMetrics.bac, evmMetrics.avgRate, evmMetrics.originalBac]);
+  }, [epics, features, milestones, projectSettings, projectRates, defaultRateId, hasRates, evmMetrics.bac, evmMetrics.avgRate, evmMetrics.originalBac]);
 
   const filteredEpics = useMemo(() => {
     if (statusFilter === 'all') return epics;
@@ -1151,11 +1265,55 @@ export default function EVMDashboardMultiProject() {
 
   const pertData = useMemo(() => {
     const rows = epics.map(epic => {
+      const epicFeatures = features.filter(f => f.epicId === epic.id);
+
+      if (epicFeatures.length > 0) {
+        // Feature-based calculation
+        const featureRows = epicFeatures.map(f => {
+          const o = f.pertOptimistic, m = f.pertMostLikely, p = f.pertPessimistic;
+          const hasFPert = o != null && m != null && p != null && o > 0 && m > 0 && p > 0;
+          if (!hasFPert) return { feature: f, hasPert: false };
+          const fte = f.fte || 1;
+          const { expected: te, stdDev: sigma } = calcPERT(o, m, p);
+          const te95 = te + 2 * sigma;
+          const dauerKW = te / hoursPerWeek / fte;
+          const dauer95KW = te95 / hoursPerWeek / fte;
+          const rate = hasRates ? getIssueRate({ rateId: f.roleId }, projectRates, defaultRateId) : 0;
+          const kostenTE = te * rate;
+          const kosten95 = te95 * rate;
+          const cv = te > 0 ? sigma / te : 0;
+          const risikoklasse = cv < 0.15 ? 'Tief' : cv <= 0.25 ? 'Mittel' : 'Hoch';
+          return { feature: f, hasPert: true, te, sigma, te95, dauerKW, dauer95KW, rate, kostenTE, kosten95, risikoklasse, cv };
+        });
+
+        const featComputed = featureRows.filter(r => r.hasPert);
+        const totalTe = featComputed.reduce((s, r) => s + r.te, 0);
+        const totalSigma = Math.sqrt(featComputed.reduce((s, r) => s + r.sigma * r.sigma, 0));
+        const totalTe95 = featComputed.reduce((s, r) => s + r.te95, 0);
+        const totalKostenTE = featComputed.reduce((s, r) => s + r.kostenTE, 0);
+        const totalKosten95 = featComputed.reduce((s, r) => s + r.kosten95, 0);
+        const totalDauerKW = featComputed.reduce((s, r) => s + r.dauerKW, 0);
+        const totalDauer95KW = featComputed.reduce((s, r) => s + r.dauer95KW, 0);
+        const uplift = epic.pertUplift || 0;
+        const budgetUplift = totalKosten95 * (1 + uplift / 100);
+        const cv = totalTe > 0 ? totalSigma / totalTe : 0;
+        const risikoklasse = cv < 0.15 ? 'Tief' : cv <= 0.25 ? 'Mittel' : 'Hoch';
+
+        return {
+          epic, hasFeatures: true, featureRows, hasPert: featComputed.length > 0,
+          te: totalTe, sigma: totalSigma, te95: totalTe95,
+          dauerKW: totalDauerKW, dauer95KW: totalDauer95KW,
+          rate: 0, kostenTE: totalKostenTE, kosten95: totalKosten95, budgetUplift, risikoklasse, cv,
+          devH: 0, uxH: 0, archH: 0, qaH: 0, pmH: 0,
+        };
+      }
+
+      // Epic-level PERT (keine Features)
       const o = epic.pertOptimistic;
       const m = epic.pertMostLikely;
       const p = epic.pertPessimistic;
       const hasPert = o != null && m != null && p != null && o > 0 && m > 0 && p > 0;
-      if (!hasPert) return { epic, hasPert: false };
+      if (!hasPert) return { epic, hasFeatures: false, hasPert: false };
 
       const fte = epic.pertFte || 1;
       const uplift = epic.pertUplift || 0;
@@ -1171,7 +1329,7 @@ export default function EVMDashboardMultiProject() {
       const risikoklasse = cv < 0.15 ? 'Tief' : cv <= 0.25 ? 'Mittel' : 'Hoch';
 
       return {
-        epic, hasPert: true, te, sigma, te95, dauerKW, dauer95KW,
+        epic, hasFeatures: false, hasPert: true, te, sigma, te95, dauerKW, dauer95KW,
         rate, kostenTE, kosten95, budgetUplift, risikoklasse, cv,
         devH: te * pertRoles.dev / 100, uxH: te * pertRoles.ux / 100,
         archH: te * pertRoles.arch / 100, qaH: te * pertRoles.qa / 100,
@@ -1197,7 +1355,7 @@ export default function EVMDashboardMultiProject() {
     };
 
     return { rows, totals, computed };
-  }, [epics, hoursPerWeek, hasRates, projectRates, defaultRateId, pertRoles]);
+  }, [epics, features, hoursPerWeek, hasRates, projectRates, defaultRateId, pertRoles]);
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -1205,7 +1363,7 @@ export default function EVMDashboardMultiProject() {
     { id: 'pert', label: 'PERT', icon: Calculator },
     ...(pvMethod === 'milestones' ? [{ id: 'milestones', label: 'Meilensteine', icon: Flag }] : []),
     { id: 'metrics', label: 'EVM Kennzahlen', icon: Target },
-    { id: 'rates', label: 'Kostensätze', icon: DollarSign },
+    { id: 'rates', label: 'Rollen & Sätze', icon: DollarSign },
     { id: 'settings', label: 'Einstellungen', icon: Settings },
     { id: 'help', label: 'EVM Glossar', icon: HelpCircle },
   ];
@@ -1462,7 +1620,7 @@ export default function EVMDashboardMultiProject() {
                     </thead>
                     <tbody className="divide-y divide-slate-200">
                       {filteredEpics.map((epic) => {
-                        const estimate = epic.baselineEstimate || getEffectiveEstimate(epic);
+                        const estimate = epic.baselineEstimate || getEffectiveEstimate(epic, features);
                         const evH = estimate * getCompletionRate(epic.status);
                         const rate = hasRates ? getIssueRate(epic, projectRates, defaultRateId) : 0;
                         const costTotal = hasRates ? estimate * rate : 0;
@@ -1546,10 +1704,10 @@ export default function EVMDashboardMultiProject() {
                       <tr>
                         <td colSpan={hasRates ? 5 : 4} className="px-4 py-3 text-sm font-medium text-slate-600">Total ({filteredEpics.length} Epics)</td>
                         <td className="px-4 py-3 text-sm text-right font-medium text-slate-600">{filteredEpics.reduce((s, i) => s + i.currentEstimate, 0)}h</td>
-                        <td className="px-4 py-3 text-sm text-right font-medium text-purple-600">{filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i)), 0)}h</td>
+                        <td className="px-4 py-3 text-sm text-right font-medium text-purple-600">{filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i, features)), 0)}h</td>
                         <td className="px-4 py-3 text-sm text-right font-medium text-blue-600">{filteredEpics.reduce((s, i) => s + i.timeSpent, 0)}h</td>
-                        <td className="px-4 py-3 text-sm text-right font-medium text-emerald-600">{filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i)) * getCompletionRate(i.status), 0).toFixed(1)}h</td>
-                        {hasRates && <td className="px-4 py-3 text-sm text-right font-medium text-slate-700">{formatCurrency(filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i)) * getIssueRate(i, projectRates, defaultRateId), 0), currency)}</td>}
+                        <td className="px-4 py-3 text-sm text-right font-medium text-emerald-600">{filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i, features)) * getCompletionRate(i.status), 0).toFixed(1)}h</td>
+                        {hasRates && <td className="px-4 py-3 text-sm text-right font-medium text-slate-700">{formatCurrency(filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i, features)) * getIssueRate(i, projectRates, defaultRateId), 0), currency)}</td>}
                         <td></td>
                         <td></td>
                       </tr>
@@ -1626,12 +1784,12 @@ export default function EVMDashboardMultiProject() {
                     <table className="w-full text-sm">
                       <thead className="bg-slate-100">
                         <tr>
-                          <th className="px-3 py-2.5 text-left font-medium text-slate-600">Epic</th>
+                          <th className="px-3 py-2.5 text-left font-medium text-slate-600">Epic / Feature</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">O (h)</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">M (h)</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">P (h)</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">FTE</th>
-                          <th className="px-3 py-2.5 text-right font-medium text-slate-600">Uplift %</th>
+                          <th className="px-3 py-2.5 text-right font-medium text-slate-600" title="Uplift für Epics, Rolle für Features">Uplift / Rolle</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">TE</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">σ</th>
                           <th className="px-3 py-2.5 text-right font-medium text-slate-600">Dauer KW</th>
@@ -1639,56 +1797,161 @@ export default function EVMDashboardMultiProject() {
                           {hasRates && <th className="px-3 py-2.5 text-right font-medium text-slate-600">Kosten TE</th>}
                           {hasRates && <th className="px-3 py-2.5 text-right font-medium text-slate-600">Kosten 95%</th>}
                           {hasRates && <th className="px-3 py-2.5 text-right font-medium text-slate-600">Budget+Uplift</th>}
-                          <th className="px-3 py-2.5 text-center font-medium text-slate-600">Risikoklasse</th>
+                          <th className="px-3 py-2.5 text-center font-medium text-slate-600">Risiko</th>
+                          <th className="px-3 py-2.5 text-center font-medium text-slate-600"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
-                        {pertData.rows.map(row => (
-                          <tr key={row.epic.id} className="hover:bg-slate-50">
-                            <td className="px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap">{row.epic.summary}</td>
-                            <td className="px-3 py-2.5">
-                              <input type="number" min={0} step={1} value={row.epic.pertOptimistic ?? ''} disabled={isOffline}
-                                onChange={e => updateEpic(row.epic.id, { pertOptimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
-                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
-                            </td>
-                            <td className="px-3 py-2.5">
-                              <input type="number" min={0} step={1} value={row.epic.pertMostLikely ?? ''} disabled={isOffline}
-                                onChange={e => updateEpic(row.epic.id, { pertMostLikely: e.target.value === '' ? null : parseFloat(e.target.value) })}
-                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
-                            </td>
-                            <td className="px-3 py-2.5">
-                              <input type="number" min={0} step={1} value={row.epic.pertPessimistic ?? ''} disabled={isOffline}
-                                onChange={e => updateEpic(row.epic.id, { pertPessimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
-                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
-                            </td>
-                            <td className="px-3 py-2.5">
-                              <input type="number" min={0.1} step={0.1} value={row.epic.pertFte ?? 1} disabled={isOffline}
-                                onChange={e => updateEpic(row.epic.id, { pertFte: parseFloat(e.target.value) || 1 })}
-                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
-                            </td>
-                            <td className="px-3 py-2.5">
-                              <input type="number" min={0} step={5} value={row.epic.pertUplift ?? 0} disabled={isOffline}
-                                onChange={e => updateEpic(row.epic.id, { pertUplift: parseFloat(e.target.value) || 0 })}
-                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
-                            </td>
-                            <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.te.toFixed(1) : '—'}</td>
-                            <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.sigma.toFixed(2) : '—'}</td>
-                            <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.dauerKW.toFixed(2) : '—'}</td>
-                            <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.dauer95KW.toFixed(2) : '—'}</td>
-                            {hasRates && <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? `${currency} ${Math.round(row.kostenTE).toLocaleString('de-CH')}` : '—'}</td>}
-                            {hasRates && <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? `${currency} ${Math.round(row.kosten95).toLocaleString('de-CH')}` : '—'}</td>}
-                            {hasRates && <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{row.hasPert ? `${currency} ${Math.round(row.budgetUplift).toLocaleString('de-CH')}` : '—'}</td>}
-                            <td className="px-3 py-2.5 text-center">
-                              {row.hasPert && (
-                                <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                  row.risikoklasse === 'Tief' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
-                                  row.risikoklasse === 'Mittel' ? 'bg-amber-50 text-amber-700 border-amber-300' :
-                                  'bg-rose-50 text-rose-700 border-rose-300'
-                                }`}>{row.risikoklasse}</span>
+                        {pertData.rows.map(row => {
+                          const isExpanded = expandedEpicIds.has(row.epic.id);
+                          const risikoStyle = (rk) => rk === 'Tief'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                            : rk === 'Mittel' ? 'bg-amber-50 text-amber-700 border-amber-300'
+                            : 'bg-rose-50 text-rose-700 border-rose-300';
+                          const totalCols = hasRates ? 15 : 12;
+
+                          return (
+                            <React.Fragment key={row.epic.id}>
+                              {/* ── Epic row ── */}
+                              <tr className={row.hasFeatures ? 'bg-indigo-50/40 hover:bg-indigo-50' : 'hover:bg-slate-50'}>
+                                <td className="px-3 py-2.5">
+                                  <div className="flex items-center gap-1.5">
+                                    {row.hasFeatures ? (
+                                      <button onClick={() => toggleEpicExpanded(row.epic.id)} className="text-slate-400 hover:text-indigo-600 flex-shrink-0">
+                                        <ChevronDown className={`w-4 h-4 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                                      </button>
+                                    ) : <div className="w-4 flex-shrink-0" />}
+                                    <span className="font-medium text-slate-900 whitespace-nowrap">{row.epic.summary || <span className="text-slate-400 italic">—</span>}</span>
+                                    {row.hasFeatures && <span className="text-xs text-slate-400 ml-1">({row.featureRows.length})</span>}
+                                  </div>
+                                </td>
+                                {/* O */}
+                                <td className="px-3 py-2.5">
+                                  {row.hasFeatures
+                                    ? <span className="text-slate-400 text-xs">—</span>
+                                    : <input type="number" min={0} step={1} value={row.epic.pertOptimistic ?? ''} disabled={isOffline}
+                                        onChange={e => updateEpic(row.epic.id, { pertOptimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                        className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />}
+                                </td>
+                                {/* M */}
+                                <td className="px-3 py-2.5">
+                                  {row.hasFeatures
+                                    ? <span className="text-slate-400 text-xs">—</span>
+                                    : <input type="number" min={0} step={1} value={row.epic.pertMostLikely ?? ''} disabled={isOffline}
+                                        onChange={e => updateEpic(row.epic.id, { pertMostLikely: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                        className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />}
+                                </td>
+                                {/* P */}
+                                <td className="px-3 py-2.5">
+                                  {row.hasFeatures
+                                    ? <span className="text-slate-400 text-xs">—</span>
+                                    : <input type="number" min={0} step={1} value={row.epic.pertPessimistic ?? ''} disabled={isOffline}
+                                        onChange={e => updateEpic(row.epic.id, { pertPessimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                        className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />}
+                                </td>
+                                {/* FTE */}
+                                <td className="px-3 py-2.5">
+                                  {row.hasFeatures
+                                    ? <span className="text-slate-400 text-xs">—</span>
+                                    : <input type="number" min={0.1} step={0.1} value={row.epic.pertFte ?? 1} disabled={isOffline}
+                                        onChange={e => updateEpic(row.epic.id, { pertFte: parseFloat(e.target.value) || 1 })}
+                                        className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />}
+                                </td>
+                                {/* Uplift% */}
+                                <td className="px-3 py-2.5">
+                                  <input type="number" min={0} step={5} value={row.epic.pertUplift ?? 0} disabled={isOffline}
+                                    onChange={e => updateEpic(row.epic.id, { pertUplift: parseFloat(e.target.value) || 0 })}
+                                    className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
+                                </td>
+                                <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.te.toFixed(1) : '—'}</td>
+                                <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.sigma.toFixed(2) : '—'}</td>
+                                <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.dauerKW.toFixed(2) : '—'}</td>
+                                <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? row.dauer95KW.toFixed(2) : '—'}</td>
+                                {hasRates && <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? `${currency} ${Math.round(row.kostenTE).toLocaleString('de-CH')}` : '—'}</td>}
+                                {hasRates && <td className="px-3 py-2.5 text-right text-slate-700">{row.hasPert ? `${currency} ${Math.round(row.kosten95).toLocaleString('de-CH')}` : '—'}</td>}
+                                {hasRates && <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{row.hasPert ? `${currency} ${Math.round(row.budgetUplift).toLocaleString('de-CH')}` : '—'}</td>}
+                                <td className="px-3 py-2.5 text-center">
+                                  {row.hasPert && <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border ${risikoStyle(row.risikoklasse)}`}>{row.risikoklasse}</span>}
+                                </td>
+                                <td className="px-3 py-2.5 text-center">
+                                  {!row.hasFeatures && (
+                                    <button onClick={() => { addFeature(row.epic.id); if (!expandedEpicIds.has(row.epic.id)) toggleEpicExpanded(row.epic.id); }} disabled={isOffline}
+                                      title="Feature hinzufügen" className="p-1 text-slate-400 hover:text-indigo-600 rounded">
+                                      <Plus className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+
+                              {/* ── Feature rows (when expanded) ── */}
+                              {row.hasFeatures && isExpanded && (
+                                <>
+                                  {row.featureRows.map(fRow => (
+                                    <tr key={fRow.feature.id} className="bg-slate-50 border-l-2 border-indigo-200">
+                                      <td className="px-3 py-2 pl-10">
+                                        <input type="text" value={fRow.feature.name} placeholder="Feature-Name..." disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { name: e.target.value })}
+                                          className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-800 text-sm" />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0} step={1} value={fRow.feature.pertOptimistic ?? ''} disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { pertOptimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                          className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0} step={1} value={fRow.feature.pertMostLikely ?? ''} disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { pertMostLikely: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                          className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0} step={1} value={fRow.feature.pertPessimistic ?? ''} disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { pertPessimistic: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                                          className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0.1} step={0.1} value={fRow.feature.fte ?? 1} disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { fte: parseFloat(e.target.value) || 1 })}
+                                          className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-right text-sm" />
+                                      </td>
+                                      {/* Rolle dropdown */}
+                                      <td className="px-3 py-2">
+                                        <select value={fRow.feature.roleId || ''} disabled={isOffline}
+                                          onChange={e => updateFeature(fRow.feature.id, { roleId: e.target.value || null })}
+                                          className="px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 text-xs">
+                                          <option value="">Default</option>
+                                          {projectRates.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                        </select>
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? fRow.te.toFixed(1) : '—'}</td>
+                                      <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? fRow.sigma.toFixed(2) : '—'}</td>
+                                      <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? fRow.dauerKW.toFixed(2) : '—'}</td>
+                                      <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? fRow.dauer95KW.toFixed(2) : '—'}</td>
+                                      {hasRates && <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? `${currency} ${Math.round(fRow.kostenTE).toLocaleString('de-CH')}` : '—'}</td>}
+                                      {hasRates && <td className="px-3 py-2 text-right text-slate-700">{fRow.hasPert ? `${currency} ${Math.round(fRow.kosten95).toLocaleString('de-CH')}` : '—'}</td>}
+                                      {hasRates && <td className="px-3 py-2 text-right text-slate-500">—</td>}
+                                      <td className="px-3 py-2 text-center">
+                                        {fRow.hasPert && <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border ${risikoStyle(fRow.risikoklasse)}`}>{fRow.risikoklasse}</span>}
+                                      </td>
+                                      <td className="px-3 py-2 text-center">
+                                        <button onClick={() => deleteFeature(fRow.feature.id)} disabled={isOffline}
+                                          className="p-1 text-slate-400 hover:text-rose-600 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {/* Add feature row */}
+                                  <tr className="bg-slate-50 border-l-2 border-indigo-200">
+                                    <td className="px-3 py-1.5 pl-10" colSpan={totalCols}>
+                                      <button onClick={() => addFeature(row.epic.id)} disabled={isOffline}
+                                        className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 px-2 py-1 rounded hover:bg-indigo-50">
+                                        <Plus className="w-3.5 h-3.5" />Feature hinzufügen
+                                      </button>
+                                    </td>
+                                  </tr>
+                                </>
                               )}
-                            </td>
-                          </tr>
-                        ))}
+                            </React.Fragment>
+                          );
+                        })}
                       </tbody>
                       {pertData.computed.length > 0 && (
                         <tfoot className="bg-slate-50 border-t-2 border-slate-300">
@@ -1702,6 +1965,7 @@ export default function EVMDashboardMultiProject() {
                             {hasRates && <td className="px-3 py-2.5 text-right">{currency} {Math.round(pertData.totals.kostenTE).toLocaleString('de-CH')}</td>}
                             {hasRates && <td className="px-3 py-2.5 text-right">{currency} {Math.round(pertData.totals.kosten95).toLocaleString('de-CH')}</td>}
                             {hasRates && <td className="px-3 py-2.5 text-right font-bold">{currency} {Math.round(pertData.totals.budgetUplift).toLocaleString('de-CH')}</td>}
+                            <td className="px-3 py-2.5"></td>
                             <td className="px-3 py-2.5"></td>
                           </tr>
                         </tfoot>
@@ -1880,7 +2144,7 @@ export default function EVMDashboardMultiProject() {
                 <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-6">
                     <div>
-                      <h3 className="text-lg font-semibold flex items-center gap-2"><DollarSign className="w-5 h-5 text-emerald-600" />Kostensätze</h3>
+                      <h3 className="text-lg font-semibold flex items-center gap-2"><DollarSign className="w-5 h-5 text-emerald-600" />Rollen & Sätze</h3>
                       <p className="text-sm text-slate-500 mt-1">{currentProject?.name}</p>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1893,7 +2157,7 @@ export default function EVMDashboardMultiProject() {
                   <table className="w-full">
                     <thead className="bg-slate-100">
                       <tr>
-                        <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Name</th>
+                        <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Rolle</th>
                         <th className="px-4 py-3 text-right text-sm font-medium text-slate-600">Rate/{currency}/h</th>
                         <th className="px-4 py-3 text-center text-sm font-medium text-slate-600">Default</th>
                         <th className="px-4 py-3 text-center text-sm font-medium text-slate-600">Epics</th>
@@ -2160,6 +2424,11 @@ export default function EVMDashboardMultiProject() {
                       { term: 'TE₉₅', full: '95%-Konfidenzwert', desc: 'Schätzung mit 95% Sicherheit: TE + 1.645 × SD. Wird als Aufwandsbasis für EVM-Berechnungen verwendet, wenn PERT-Werte vorhanden sind.' },
                       { term: 'FTE', full: 'Full Time Equivalent', desc: 'Anzahl Vollzeitstellen, die am Epic arbeiten. Wird zur Berechnung der Dauer aus dem Aufwand verwendet: Dauer = Aufwand / FTE.' },
                       { term: 'Uplift', full: 'Risikozuschlag', desc: 'Prozentualer Aufschlag auf die PERT-Schätzung für Risiken, Meetings oder Overhead. Wird auf den TE₉₅-Wert addiert.' },
+                    ]},
+                    { title: 'Features & Rollen', items: [
+                      { term: 'Feature', full: 'Arbeitspaket innerhalb eines Epics', desc: 'Optionale Unterteilung eines Epics in einzelne Arbeitspakete. Jedes Feature bekommt eigene PERT-Werte (O/M/P) und eine Rolle (= Kostensatz). Der Epic zeigt dann das Total aller Feature-Aufwände.' },
+                      { term: 'Rolle', full: 'Kostensatz / Ressourcentyp', desc: 'Jede Rolle (z.B. Dev, QA, Design) hat einen Stundensatz. Features werden einer Rolle zugeordnet, um rollenbasierte Kostenberechnungen zu ermöglichen. Rollen werden im Tab "Rollen & Sätze" verwaltet.' },
+                      { term: 'Feature-TE₉₅', full: 'Aufwand auf Feature-Ebene', desc: 'Wenn ein Epic Features hat, wird die PERT-Schätzung pro Feature berechnet (TE₉₅ = TE + 2×σ). Die Summer aller Feature-TE₉₅ ergibt den effektiven Gesamtaufwand des Epics.' },
                     ]},
                     { title: 'Baseline & Scope', items: [
                       { term: 'Baseline', full: 'Referenz-Snapshot', desc: 'Ein gespeicherter Zustand aller Epics zu einem bestimmten Zeitpunkt. Dient als Vergleichsbasis — neue Epics nach der Baseline werden als Scope-Änderung erkannt.' },

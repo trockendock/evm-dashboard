@@ -67,3 +67,23 @@ ALTER TABLE epics ADD COLUMN IF NOT EXISTS pert_uplift numeric NOT NULL DEFAULT 
 -- Baseline Management: Snapshots auf Projekt, Zuordnung auf Epics
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS baselines jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE epics ADD COLUMN IF NOT EXISTS baseline_id text;
+
+-- Child Features pro Epic (optionale PERT-Schätzung mit Rolle/Kostensatz)
+create table features (
+  id uuid primary key default gen_random_uuid(),
+  epic_id uuid references epics(id) on delete cascade,
+  name text not null default '',
+  role_id text,
+  pert_optimistic numeric,
+  pert_most_likely numeric,
+  pert_pessimistic numeric,
+  fte numeric not null default 1,
+  sort_order integer not null default 0,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index idx_features_epic_id on features(epic_id);
+alter table features enable row level security;
+create policy "Allow all" on features for all using (true) with check (true);
+create trigger features_updated_at before update on features
+  for each row execute function update_updated_at();

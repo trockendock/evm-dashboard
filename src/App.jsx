@@ -749,10 +749,12 @@ export default function EVMDashboardMultiProject() {
           const mapped = data.map(mapEpicFromDb);
           setEpics(mapped);
           setProjectEpicsMap(prev => ({ ...prev, [currentProjectId]: mapped }));
-          // Load features for all epics
-          const epicIds = mapped.map(e => e.id);
-          const featData = await dbLoadFeatures(epicIds);
-          if (featData) setFeatures(featData.map(mapFeatureFromDb));
+          // Load features for all epics (graceful: table may not exist yet)
+          try {
+            const epicIds = mapped.map(e => e.id);
+            const featData = await dbLoadFeatures(epicIds);
+            if (featData) setFeatures(featData.map(mapFeatureFromDb));
+          } catch { /* features table not yet created */ }
         }
       } catch (err) {
         console.error('Failed to load epics/features:', err);

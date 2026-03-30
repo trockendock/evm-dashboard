@@ -331,6 +331,10 @@ const mapEpicFromDb = (row) => ({
   pertUplift: row.pert_uplift != null ? Number(row.pert_uplift) : 0,
   baselineId: row.baseline_id || null,
   removedFromJira: row.removed_from_jira,
+  moscow: row.moscow || null,
+  phase: row.phase || null,
+  priority: row.priority != null ? Number(row.priority) : null,
+  remarks: row.remarks || '',
 });
 
 // Map app format back to DB format for updates
@@ -342,6 +346,7 @@ const mapEpicToDb = (updates) => {
     rateId: 'rate_id', pertOptimistic: 'pert_optimistic', pertMostLikely: 'pert_most_likely',
     pertPessimistic: 'pert_pessimistic', pertFte: 'pert_fte', pertUplift: 'pert_uplift',
     baselineId: 'baseline_id', removedFromJira: 'removed_from_jira',
+    moscow: 'moscow', phase: 'phase', priority: 'priority', remarks: 'remarks',
   };
   const result = {};
   for (const [key, val] of Object.entries(updates)) {
@@ -895,6 +900,7 @@ export default function EVMDashboardMultiProject() {
       status: 'To Do', currentEstimate: 0, timeSpent: 0, baselineEstimate: 0, isBaselineLocked: false,
       rateId: null, jiraKey: null, jiraStatus: null, removedFromJira: false,
       pertOptimistic: null, pertMostLikely: null, pertPessimistic: null, pertFte: 1, pertUplift: 0, baselineId: null,
+      moscow: null, phase: null, priority: null, remarks: '',
     };
     setEpics(prev => [...prev, newEpic]);
     setProjectEpicsMap(prev => ({ ...prev, [currentProjectId]: [...(prev[currentProjectId] || []), newEpic] }));
@@ -934,7 +940,7 @@ export default function EVMDashboardMultiProject() {
         body: {
           domain: config.domain, email: config.email, apiToken: config.apiToken,
           jql: `issue in linkedIssues("${config.initiativeKey}", "${config.linkTypeName || 'is part of'}")`,
-          fields: `summary,status,${config.startDateField || 'customfield_10015'},${config.endDateField || 'duedate'},timeoriginalestimate,timespent`,
+          fields: `summary,status,${config.startDateField || 'customfield_10015'},${config.endDateField || 'duedate'},timeoriginalestimate,timespent${config.moscowField ? ',' + config.moscowField : ''}`,
         },
       });
       if (error) throw error;
@@ -954,6 +960,14 @@ export default function EVMDashboardMultiProject() {
           timeSpent: Math.round(((fields.timespent || 0) / 3600) * 10) / 10,
           removedFromJira: false,
         };
+        // MoSCoW aus Jira-Feld übernehmen (falls konfiguriert)
+        if (config.moscowField) {
+          const raw = fields[config.moscowField];
+          const val = (typeof raw === 'object' ? raw?.name || raw?.value : raw) || '';
+          const normalized = val.toString().toUpperCase().replace(/[^A-Z]/g, '');
+          const moscowMap = { MUST: 'MUST', MUSTHAVE: 'MUST', SHOULD: 'SHOULD', SHOULDHAVE: 'SHOULD', COULD: 'COULD', COULDHAVE: 'COULD', WONT: 'WONT', WONTHAVE: 'WONT' };
+          if (moscowMap[normalized]) updates.moscow = moscowMap[normalized];
+        }
         if (existing) {
           await updateEpic(existing.id, updates);
         } else {
@@ -1186,6 +1200,27 @@ export default function EVMDashboardMultiProject() {
     return { bac, ev, ac, pv, sv, cv, spi, cpi, eac, etc, vac, tcpi, progress, bacH, evH, acH, pvH, avgRate, originalBac };
   }, [epics, features, hasRates, projectRates, defaultRateId, pvMethod, milestones, reportingDate, activeBaseline]);
 
+  // ---- MoSCoW Health (ANF-3) ----
+  const moscowHealth = useMemo(() => {
+    const categories = ['MUST', 'SHOULD', 'COULD', 'WONT'];
+    const thresholds = { MUST: 60, SHOULD: 25, COULD: 20, WONT: 35 };
+    let totalHours = 0, unassignedCount = 0, unassignedHours = 0;
+    const hoursByCategory = { MUST: 0, SHOULD: 0, COULD: 0, WONT: 0 };
+
+    epics.forEach(epic => {
+      const h = getEffectiveEstimate(epic, features);
+      totalHours += h;
+      if (epic.moscow && categories.includes(epic.moscow)) {
+        hoursByCategory[epic.moscow] += h;
+      } else { unassignedCount++; unassignedHours += h; }
+    });
+
+    const mustPct = totalHours > 0 ? (hoursByCategory.MUST / totalHours) * 100 : 0;
+    const mustOk = mustPct <= 60;
+
+    return { categories, hoursByCategory, totalHours, unassignedCount, unassignedHours, mustPct, mustOk, thresholds };
+  }, [epics, features]);
+
   // ---- Timeline Projection ----
   const timelineProjection = useMemo(() => {
     const plannedEnd = projectSettings.endDate ? new Date(projectSettings.endDate + 'T00:00:00') : null;
@@ -1198,7 +1233,7 @@ export default function EVMDashboardMultiProject() {
       ? new Date(projectStart.getTime() + (plannedDays / evmMetrics.spi) * 86400000) : null;
 
     // Method B: PERT/FTE-based (bottom-up, 5-day work week)
-    const hpw = projectSettings.hoursPerWeek || 40;
+    const hpw = projectSettings.hoursPerWeek || 42;
     const remainingH = Math.max(evmMetrics.bacH - evmMetrics.evH, 0);
     const activeFte = epics.filter(e => e.status !== 'Done').reduce((s, e) => s + (e.pertFte || 1), 0) || 1;
     const remainingWeeks = remainingH / (hpw * activeFte);
@@ -1320,9 +1355,36 @@ export default function EVMDashboardMultiProject() {
     total: epics.length,
   }), [epics]);
 
+  // ---- Gantt Data ----
+  const ganttData = useMemo(() => {
+    const withDates = epics.filter(e => e.startDate && e.endDate);
+    if (!withDates.length) return { data: [], totalDays: 0, todayOffset: 0, timelineStart: null };
+
+    const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+    const sorted = [...withDates].sort((a, b) => a.startDate.localeCompare(b.startDate));
+    const timelineStart = sorted[0].startDate;
+    const timelineEnd = sorted.reduce((max, e) => e.endDate > max ? e.endDate : max, sorted[0].endDate);
+    const totalDays = daysBetween(timelineStart, timelineEnd);
+    const todayOffset = daysBetween(timelineStart, new Date().toISOString().slice(0, 10));
+
+    const data = sorted.map(e => ({
+      id: e.id,
+      name: e.summary.length > 35 ? e.summary.slice(0, 32) + '...' : e.summary,
+      fullName: e.summary,
+      moscow: e.moscow,
+      status: e.status,
+      startDate: e.startDate,
+      endDate: e.endDate,
+      offset: daysBetween(timelineStart, e.startDate),
+      duration: Math.max(1, daysBetween(e.startDate, e.endDate)),
+    }));
+
+    return { data, totalDays, todayOffset, timelineStart };
+  }, [epics]);
+
   // ---- PERT Calculations ----
   const pertRoles = projectSettings.pertRoles || { dev: 60, ux: 10, arch: 5, qa: 15, pm: 10 };
-  const hoursPerWeek = projectSettings.hoursPerWeek || 40;
+  const hoursPerWeek = projectSettings.hoursPerWeek || 42;
 
   const pertData = useMemo(() => {
     const rows = epics.map(epic => {
@@ -1417,6 +1479,38 @@ export default function EVMDashboardMultiProject() {
 
     return { rows, totals, computed };
   }, [epics, features, hoursPerWeek, hasRates, projectRates, defaultRateId, pertRoles]);
+
+  // ---- Gantt Helpers ----
+  const moscowBarColors = { MUST: '#dc2626', SHOULD: '#d97706', COULD: '#2563eb', WONT: '#94a3b8' };
+
+  const renderGanttBar = (props) => {
+    const { x, y, width, height, payload } = props;
+    const fill = moscowBarColors[payload.moscow] || '#cbd5e1';
+    return (
+      <g>
+        <rect x={x} y={y} width={Math.max(width, 2)} height={height} fill={fill} rx={3} />
+        {width > 50 && (
+          <text x={x + 6} y={y + height / 2 + 4} fill="white" fontSize={11} fontWeight="bold">
+            {payload.moscow || '—'}
+          </text>
+        )}
+      </g>
+    );
+  };
+
+  const GanttTooltip = ({ active, payload }) => {
+    if (!active || !payload?.[1]) return null;
+    const d = payload[1].payload;
+    const moscowLabel = { MUST: 'MUST', SHOULD: 'SHOULD', COULD: 'COULD', WONT: "WON'T" };
+    return (
+      <div className="bg-white shadow-lg border rounded-lg p-3 text-sm max-w-xs">
+        <p className="font-semibold text-slate-900">{d.fullName}</p>
+        <p className="text-slate-500">{d.startDate} → {d.endDate} ({d.duration} Tage)</p>
+        <p>MoSCoW: <span className="font-medium">{moscowLabel[d.moscow] || '—'}</span></p>
+        <p>Status: {d.status}</p>
+      </div>
+    );
+  };
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -1517,6 +1611,31 @@ export default function EVMDashboardMultiProject() {
                   </div>
                 )}
 
+                {/* Governance Alert (ANF-1) */}
+                {(evmMetrics.spi < 0.9 || evmMetrics.cpi < 0.9) && evmMetrics.pv > 0 && (
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-rose-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="font-medium text-rose-800">Exception Report fällig</p>
+                      <div className="text-sm text-rose-700 mt-1 space-y-0.5">
+                        {evmMetrics.spi < 0.9 && <p>SPI unter Schwellwert ({evmMetrics.spi.toFixed(2)} &lt; 0.90)</p>}
+                        {evmMetrics.cpi < 0.9 && <p>CPI unter Schwellwert ({evmMetrics.cpi.toFixed(2)} &lt; 0.90)</p>}
+                      </div>
+                      <p className="text-xs text-rose-500 mt-2">Gemäss Governance-Rhythmus: Sofortiger Exception Report an die GL erforderlich.</p>
+                    </div>
+                  </div>
+                )}
+                {(evmMetrics.spi >= 0.9 && evmMetrics.cpi >= 0.9) && (evmMetrics.spi < 1.0 || evmMetrics.cpi < 1.0) && evmMetrics.pv > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                    <p className="text-sm text-amber-700">
+                      Erwähnung im nächsten Highlight Report empfohlen
+                      {evmMetrics.spi < 1.0 && ` – SPI ${evmMetrics.spi.toFixed(2)}`}
+                      {evmMetrics.cpi < 1.0 && ` – CPI ${evmMetrics.cpi.toFixed(2)}`}
+                    </p>
+                  </div>
+                )}
+
                 <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
                   <div className="flex items-start justify-between mb-4">
                     <div>
@@ -1566,7 +1685,7 @@ export default function EVMDashboardMultiProject() {
                       <p className="text-sm text-emerald-600 font-medium">Projekt abgeschlossen.</p>
                     ) : (
                       <>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-5">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-5">
                           {/* Geplantes Ende */}
                           <div className="text-center p-4 rounded-lg bg-slate-50">
                             <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Geplantes Ende</p>
@@ -1574,7 +1693,7 @@ export default function EVMDashboardMultiProject() {
                             <p className="text-xs text-slate-400 mt-1">Projekt-Initiative</p>
                           </div>
                           {/* SPI-Prognose */}
-                          <div className={`text-center p-4 rounded-lg ${timelineProjection.spiDelay == null ? 'bg-slate-50' : timelineProjection.spiDelay <= 0 ? 'bg-emerald-50' : timelineProjection.spiDelay <= 14 ? 'bg-amber-50' : 'bg-rose-50'}`}>
+                          <div className={`text-center p-4 rounded-lg ${timelineProjection.spiDelay == null ? 'bg-slate-50' : timelineProjection.spiDelay <= 0 ? 'bg-emerald-50' : timelineProjection.spiDelay <= 14 ? 'bg-amber-50' : 'bg-rose-50'}`} title="Sind wir im Zeitplan?">
                             <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">SPI-Prognose</p>
                             <p className="text-xl font-bold text-slate-800">
                               {timelineProjection.spiEnd ? formatDate(timelineProjection.spiEnd.toISOString().split('T')[0]) : 'n/a'}
@@ -1598,6 +1717,20 @@ export default function EVMDashboardMultiProject() {
                               </p>
                             )}
                             <p className="text-xs text-slate-400 mt-0.5">{timelineProjection.activeFte} FTE aktiv</p>
+                          </div>
+                          {/* CPI-Prognose */}
+                          <div className={`text-center p-4 rounded-lg ${evmMetrics.cpi === 0 ? 'bg-slate-50' : evmMetrics.cpi >= 1 ? 'bg-emerald-50' : evmMetrics.cpi >= 0.9 ? 'bg-amber-50' : 'bg-rose-50'}`} title="Sind wir im Budget?">
+                            <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">CPI-Prognose</p>
+                            <p className="text-xl font-bold text-slate-800">
+                              {evmMetrics.ac > 0 ? (hasRates ? formatCurrency(evmMetrics.eac, currency) : `${evmMetrics.eac.toFixed(0)}h`) : 'n/a'}
+                            </p>
+                            {evmMetrics.ac > 0 && (
+                              <p className={`text-xs mt-1 font-medium ${evmMetrics.vac >= 0 ? 'text-emerald-600' : evmMetrics.cpi >= 0.9 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                {evmMetrics.vac >= 0 ? 'Unter Budget' : 'Über Budget'}
+                                {' '}({hasRates ? formatCurrency(Math.abs(evmMetrics.vac), currency) : `${Math.abs(evmMetrics.vac).toFixed(0)}h`})
+                              </p>
+                            )}
+                            <p className="text-xs text-slate-400 mt-0.5">CPI: {evmMetrics.cpi.toFixed(2)}</p>
                           </div>
                         </div>
                         {/* Mini Timeline */}
@@ -1647,38 +1780,57 @@ export default function EVMDashboardMultiProject() {
                   </div>
                 )}
 
+                {/* Epic Timeline / Gantt */}
+                {ganttData.data.length > 0 && (
+                  <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                    <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
+                      <Calendar className="w-5 h-5 text-blue-600" /> Epic Timeline
+                    </h3>
+                    <div style={{ maxHeight: 600, overflowY: ganttData.data.length > 15 ? 'auto' : 'visible' }}>
+                      <div style={{ height: Math.max(300, ganttData.data.length * 40) }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart layout="vertical" data={ganttData.data} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                            <XAxis type="number" domain={[0, ganttData.totalDays]} tickFormatter={(v) => { const d = new Date(ganttData.timelineStart); d.setDate(d.getDate() + v); return d.toLocaleDateString('de-CH', { day: '2-digit', month: 'short' }); }} />
+                            <YAxis type="category" dataKey="name" width={200} tick={{ fontSize: 12 }} />
+                            <Tooltip content={<GanttTooltip />} />
+                            <ReferenceLine x={ganttData.todayOffset} stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Heute', fill: '#64748b', fontSize: 11, position: 'top' }} />
+                            <Bar dataKey="offset" stackId="gantt" fill="transparent" />
+                            <Bar dataKey="duration" stackId="gantt" shape={renderGanttBar} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 mt-3 text-[10px] text-slate-400">
+                      {[['MUST','bg-red-600/70'],['SHOULD','bg-amber-600/70'],['COULD','bg-blue-600/70'],["WON'T",'bg-slate-400/70']].map(([l,c]) => (
+                        <span key={l} className="flex items-center gap-1">
+                          <span className={`w-2.5 h-2.5 rounded-sm ${c}`}></span> {l}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Kostenprognose (ANF-2) */}
                 <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
-                  <h3 className="text-xl font-semibold mb-6">S-Kurven Projektion</h3>
-                  <ResponsiveContainer width="100%" height={400}>
-                    <ComposedChart data={sCurveData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="dateLabel" stroke="#64748b" fontSize={11} />
-                      <YAxis stroke="#64748b" tickFormatter={v => hasRates ? formatCurrency(v, currency) : `${Math.round(v)}h`} />
-                      <Tooltip contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px' }} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel} formatter={(value, name) => [hasRates ? formatCurrency(value, currency) : `${value?.toFixed(1)}h`, name]} />
-                      <Legend />
-                      <ReferenceLine y={evmMetrics.bac} stroke="#8b5cf6" strokeDasharray="5 5" label={{ value: `BAC: ${hasRates ? formatCurrency(evmMetrics.bac, currency) : evmMetrics.bac + 'h'}`, fill: '#8b5cf6', fontSize: 12 }} />
-                      {evmMetrics.originalBac && evmMetrics.originalBac !== evmMetrics.bac && (
-                        <ReferenceLine y={evmMetrics.originalBac} stroke="#f59e0b" strokeDasharray="8 4" label={{ value: `Baseline: ${hasRates ? formatCurrency(evmMetrics.originalBac, currency) : evmMetrics.originalBac + 'h'}`, fill: '#f59e0b', fontSize: 11 }} />
-                      )}
-                      {/* Today vertical line */}
-                      {sCurveData.length > 0 && (() => {
-                        const todayMs = timelineProjection.today.getTime();
-                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - todayMs) < Math.abs(c.date - todayMs) ? p : c);
-                        return <ReferenceLine x={closest.dateLabel} stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Heute', fill: '#94a3b8', fontSize: 11, position: 'top' }} />;
-                      })()}
-                      {/* Planned end vertical line */}
-                      {timelineProjection.plannedEnd && sCurveData.length > 0 && (() => {
-                        const endMs = timelineProjection.plannedEnd.getTime();
-                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - endMs) < Math.abs(c.date - endMs) ? p : c);
-                        return <ReferenceLine x={closest.dateLabel} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: 'Geplant', fill: '#f59e0b', fontSize: 11, position: 'top' }} />;
-                      })()}
-                      <Area type="monotone" dataKey="pvTime" name="PV (Zeitbasiert)" fill="#3b82f620" stroke="#3b82f6" strokeWidth={2} />
-                      {milestones.length > 0 && <Line type="monotone" dataKey="pvMilestone" name="PV (Meilensteine)" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="5 5" dot={false} />}
-                      <Line type="monotone" dataKey="ev" name="EV (Earned)" stroke="#10b981" strokeWidth={2} dot={false} connectNulls={false} />
-                      <Line type="monotone" dataKey="evProjection" name="EV (Prognose)" stroke="#10b981" strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls={false} />
-                      <Line type="monotone" dataKey="ac" name="AC (Actual)" stroke="#f43f5e" strokeWidth={2} dot={false} connectNulls={false} />
-                    </ComposedChart>
-                  </ResponsiveContainer>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-blue-600" />
+                    Kostenprognose
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[
+                      { label: 'BAC (Budget)', value: hasRates ? formatCurrency(evmMetrics.bac, currency) : `${evmMetrics.bacH.toFixed(1)}h`, sub: 'Gesamtbudget', color: 'text-slate-700' },
+                      { label: 'EAC (Prognose)', value: hasRates ? formatCurrency(evmMetrics.eac, currency) : `${evmMetrics.eac.toFixed(1)}h`, sub: 'Prognostizierte Gesamtkosten', color: evmMetrics.vac >= 0 ? 'text-emerald-700' : 'text-rose-700' },
+                      { label: 'VAC (Differenz)', value: `${evmMetrics.vac >= 0 ? '+' : ''}${hasRates ? formatCurrency(evmMetrics.vac, currency) : `${evmMetrics.vac.toFixed(1)}h`}`, sub: evmMetrics.vac >= 0 ? 'Unter Budget' : 'Über Budget', color: evmMetrics.vac >= 0 ? 'text-emerald-700' : 'text-rose-700' },
+                      { label: 'ETC (Restkosten)', value: hasRates ? formatCurrency(evmMetrics.etc, currency) : `${evmMetrics.etc.toFixed(1)}h`, sub: 'Noch benötigt', color: 'text-slate-700' },
+                    ].map(item => (
+                      <div key={item.label} className="bg-slate-50 rounded-lg p-3">
+                        <p className="text-xs text-slate-500">{item.label}</p>
+                        <p className={`text-lg font-bold ${item.color} mt-1`}>{item.value}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">{item.sub}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1731,6 +1883,66 @@ export default function EVMDashboardMultiProject() {
                     </div>
                   </div>
                 </div>
+
+                {/* MoSCoW + Stage Gate Row (ANF-3 + ANF-4) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* MoSCoW Health Indicator (ANF-3) */}
+                  {moscowHealth.totalHours > 0 && (
+                    <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                      <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                        <Target className="w-4 h-4 text-purple-600" />
+                        MoSCoW Scope-Split
+                      </h3>
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-2xl font-bold text-slate-900">{Math.round(moscowHealth.mustPct)}%</span>
+                        <span className="text-sm text-slate-500">MUST-Anteil (max. 60%)</span>
+                        <span className={`ml-auto px-2 py-0.5 text-xs font-bold rounded ${moscowHealth.mustOk ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                          {moscowHealth.mustOk ? '✓ OK' : '✗ Verletzt'}
+                        </span>
+                      </div>
+                      <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden relative">
+                        <div className={`h-full rounded-full transition-all ${moscowHealth.mustOk ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(moscowHealth.mustPct, 100)}%` }} />
+                        <div className="absolute top-0 h-full border-r-2 border-slate-400" style={{ left: '60%' }} title="60%-Schwelle" />
+                      </div>
+                      <div className="flex justify-between mt-1 text-[10px] text-slate-400">
+                        <span>0%</span>
+                        <span>60% Limit</span>
+                        <span>100%</span>
+                      </div>
+                      {moscowHealth.unassignedCount > 0 && (
+                        <p className="mt-3 text-xs text-amber-600 flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          {moscowHealth.unassignedCount} Epic{moscowHealth.unassignedCount > 1 ? 's' : ''} ohne MoSCoW-Zuordnung
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Stage Gate Status (ANF-4) */}
+                  {projectSettings.stageGateCriterion && (
+                    <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                      <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                        <Flag className="w-4 h-4 text-indigo-600" />
+                        Stage Gate
+                      </h3>
+                      <p className="text-sm text-slate-700 mb-3">{projectSettings.stageGateCriterion}</p>
+                      <div className="flex items-center gap-3">
+                        <span className={`px-3 py-1 text-sm font-medium rounded-lg ${
+                          projectSettings.stageGateStatus === 'achieved' ? 'bg-emerald-100 text-emerald-700' :
+                          projectSettings.stageGateStatus === 'missed' ? 'bg-rose-100 text-rose-700' :
+                          'bg-slate-100 text-slate-600'
+                        }`}>
+                          {projectSettings.stageGateStatus === 'achieved' ? '✓ Erreicht' :
+                           projectSettings.stageGateStatus === 'missed' ? '✗ Nicht erreicht' :
+                           '○ Offen'}
+                        </span>
+                        <span className="text-xs text-slate-400 ml-auto">
+                          Zieldatum: {projectSettings.stageGateDate ? formatDate(projectSettings.stageGateDate) : (projectSettings.endDate ? formatDate(projectSettings.endDate) : '–')}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1772,6 +1984,7 @@ export default function EVMDashboardMultiProject() {
                     <thead className="bg-slate-100">
                       <tr>
                         <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Epic</th>
+                        <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">MoSCoW</th>
                         <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Start</th>
                         <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Ende</th>
                         <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">Status</th>
@@ -1814,6 +2027,16 @@ export default function EVMDashboardMultiProject() {
                                 )}
                               </div>
                               {epic.jiraKey && <p className="text-xs text-indigo-500 font-mono">{epic.jiraKey}</p>}
+                            </td>
+                            <td className="px-4 py-3">
+                              <select value={epic.moscow || ''} onChange={(e) => updateEpic(epic.id, { moscow: e.target.value || null })} disabled={isOffline}
+                                className={`px-2 py-1 text-xs border rounded font-medium ${epic.moscow === 'MUST' ? 'bg-red-100 border-red-300 text-red-700' : epic.moscow === 'SHOULD' ? 'bg-amber-100 border-amber-300 text-amber-700' : epic.moscow === 'COULD' ? 'bg-blue-100 border-blue-300 text-blue-700' : epic.moscow === 'WONT' ? 'bg-slate-200 border-slate-300 text-slate-500' : 'bg-white border-slate-300 text-slate-400'}`}>
+                                <option value="">—</option>
+                                <option value="MUST">MUST</option>
+                                <option value="SHOULD">SHOULD</option>
+                                <option value="COULD">COULD</option>
+                                <option value="WONT">WON'T</option>
+                              </select>
                             </td>
                             <td className="px-4 py-3">
                               <input type="date" value={epic.startDate || ''} onChange={(e) => updateEpic(epic.id, { startDate: e.target.value })} disabled={isOffline}
@@ -1873,7 +2096,7 @@ export default function EVMDashboardMultiProject() {
                     </tbody>
                     <tfoot className="bg-slate-50">
                       <tr>
-                        <td colSpan={hasRates ? 5 : 4} className="px-4 py-3 text-sm font-medium text-slate-600">Total ({filteredEpics.length} Epics)</td>
+                        <td colSpan={hasRates ? 6 : 5} className="px-4 py-3 text-sm font-medium text-slate-600">Total ({filteredEpics.length} Epics)</td>
                         <td className="px-4 py-3 text-sm text-right font-medium text-slate-600">{filteredEpics.reduce((s, i) => s + i.currentEstimate, 0)}h</td>
                         <td className="px-4 py-3 text-sm text-right font-medium text-purple-600">{filteredEpics.reduce((s, i) => s + (i.baselineEstimate || getEffectiveEstimate(i, features)), 0)}h</td>
                         <td className="px-4 py-3 text-sm text-right font-medium text-blue-600">{filteredEpics.reduce((s, i) => s + i.timeSpent, 0)}h</td>
@@ -1885,6 +2108,74 @@ export default function EVMDashboardMultiProject() {
                     </tfoot>
                   </table>
                 </div>
+
+                {/* MoSCoW Kapazitäts-Check */}
+                {(() => {
+                  const moscowLabels = { MUST: 'MUST', SHOULD: 'SHOULD', COULD: 'COULD', WONT: "WON'T" };
+                  const moscowColors = {
+                    MUST: 'bg-red-100 text-red-700',
+                    SHOULD: 'bg-amber-100 text-amber-700',
+                    COULD: 'bg-blue-100 text-blue-700',
+                    WONT: 'bg-slate-200 text-slate-500',
+                  };
+                  const moscowTargets = { MUST: '≤ 60%', SHOULD: '~20%', COULD: '~15%', WONT: '~5%' };
+                  const { categories: moscowCategories, hoursByCategory, totalHours, unassignedCount, unassignedHours, thresholds: moscowThresholds } = moscowHealth;
+
+                  return (
+                    <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
+                      <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                        <Target className="w-4 h-4 text-purple-600" />
+                        MoSCoW Kapazitäts-Check
+                        <span className="text-xs font-normal text-slate-400" title="Must-Haves sollten max. 60% der Gesamtkapazität betragen, damit Scope geflext werden kann.">ℹ️</span>
+                      </h3>
+                      <table className="w-full">
+                        <thead className="bg-slate-100">
+                          <tr>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-slate-600">Kategorie</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-600">Stunden</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-600">% Total</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-600">Ziel %</th>
+                            <th className="px-4 py-2 text-center text-xs font-medium text-slate-600">OK?</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {moscowCategories.map(cat => {
+                            const hours = hoursByCategory[cat];
+                            const pct = totalHours > 0 ? (hours / totalHours) * 100 : 0;
+                            const isOk = pct <= moscowThresholds[cat];
+                            return (
+                              <tr key={cat} className="hover:bg-slate-50">
+                                <td className="px-4 py-2">
+                                  <span className={`inline-block px-2 py-0.5 text-xs font-bold rounded ${moscowColors[cat]}`}>{moscowLabels[cat]}</span>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-right font-medium text-slate-700">{Math.round(hours).toLocaleString('de-CH')}</td>
+                                <td className="px-4 py-2 text-sm text-right text-slate-600">{totalHours > 0 ? `${Math.round(pct)}%` : '—'}</td>
+                                <td className="px-4 py-2 text-sm text-right text-slate-500">{moscowTargets[cat]}</td>
+                                <td className="px-4 py-2 text-center">
+                                  {totalHours > 0 ? (isOk ? <CheckCircle className="w-4 h-4 text-emerald-500 inline" /> : <AlertTriangle className="w-4 h-4 text-amber-500 inline" />) : <span className="text-slate-300">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot className="bg-slate-50">
+                          <tr>
+                            <td className="px-4 py-2 text-xs font-bold text-slate-700">TOTAL</td>
+                            <td className="px-4 py-2 text-sm text-right font-bold text-slate-800">{Math.round(totalHours).toLocaleString('de-CH')}</td>
+                            <td colSpan={3}></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                      {unassignedCount > 0 && (
+                        <p className="mt-3 text-xs text-amber-600 flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          {unassignedCount} Epic{unassignedCount > 1 ? 's' : ''} ohne MoSCoW-Zuordnung ({Math.round(unassignedHours)} Stunden)
+                        </p>
+                      )}
+                      <p className="mt-2 text-xs text-slate-400">Hinweis: Stunden aus PERT-Schätzung (TE₉₅). Must-Haves max. 60% = Voraussetzung für Fix-or-Flex.</p>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -2172,7 +2463,7 @@ export default function EVMDashboardMultiProject() {
                           <label className="block text-sm font-medium text-slate-600 mb-1">Stunden/Woche</label>
                           <input type="number" min={1} max={60} step={1} disabled={isOffline}
                             value={hoursPerWeek}
-                            onChange={e => updateProjectSettings({ hoursPerWeek: parseFloat(e.target.value) || 40 })}
+                            onChange={e => updateProjectSettings({ hoursPerWeek: parseFloat(e.target.value) || 42 })}
                             className="w-24 px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm" />
                         </div>
                       </div>
@@ -2242,20 +2533,33 @@ export default function EVMDashboardMultiProject() {
 
                 <div className="bg-white shadow-sm border border-slate-200 rounded-xl p-6">
                   <h3 className="text-lg font-semibold mb-4">S-Kurve</h3>
-                  <ResponsiveContainer width="100%" height={280}>
+                  <ResponsiveContainer width="100%" height={400}>
                     <ComposedChart data={sCurveData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis dataKey="dateLabel" stroke="#64748b" fontSize={11} />
                       <YAxis stroke="#64748b" fontSize={12} tickFormatter={v => hasRates ? formatCurrency(v, currency) : `${Math.round(v)}h`} />
                       <Tooltip contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px' }} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel} formatter={(v, name) => [hasRates ? formatCurrency(v, currency) : `${v?.toFixed(1)}h`, name]} />
                       <Legend />
-                      <ReferenceLine y={evmMetrics.bac} stroke="#8b5cf6" strokeDasharray="5 5" />
+                      <ReferenceLine y={evmMetrics.bac} stroke="#8b5cf6" strokeDasharray="5 5" label={{ value: `BAC: ${hasRates ? formatCurrency(evmMetrics.bac, currency) : evmMetrics.bac + 'h'}`, fill: '#8b5cf6', fontSize: 12 }} />
                       {evmMetrics.originalBac && evmMetrics.originalBac !== evmMetrics.bac && (
-                        <ReferenceLine y={evmMetrics.originalBac} stroke="#f59e0b" strokeDasharray="8 4" />
+                        <ReferenceLine y={evmMetrics.originalBac} stroke="#f59e0b" strokeDasharray="8 4" label={{ value: `Baseline: ${hasRates ? formatCurrency(evmMetrics.originalBac, currency) : evmMetrics.originalBac + 'h'}`, fill: '#f59e0b', fontSize: 11 }} />
                       )}
-                      <Line type="monotone" dataKey="pvTime" name="PV (Zeitbasiert)" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                      {/* Today vertical line */}
+                      {sCurveData.length > 0 && (() => {
+                        const todayMs = timelineProjection.today.getTime();
+                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - todayMs) < Math.abs(c.date - todayMs) ? p : c);
+                        return <ReferenceLine x={closest.dateLabel} stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Heute', fill: '#94a3b8', fontSize: 11, position: 'top' }} />;
+                      })()}
+                      {/* Planned end vertical line */}
+                      {timelineProjection.plannedEnd && sCurveData.length > 0 && (() => {
+                        const endMs = timelineProjection.plannedEnd.getTime();
+                        const closest = sCurveData.reduce((c, p) => Math.abs(p.date - endMs) < Math.abs(c.date - endMs) ? p : c);
+                        return <ReferenceLine x={closest.dateLabel} stroke="#f59e0b" strokeDasharray="5 5" label={{ value: 'Geplant', fill: '#f59e0b', fontSize: 11, position: 'top' }} />;
+                      })()}
+                      <Area type="monotone" dataKey="pvTime" name="PV (Zeitbasiert)" fill="#3b82f620" stroke="#3b82f6" strokeWidth={2} />
                       {milestones.length > 0 && <Line type="monotone" dataKey="pvMilestone" name="PV (Meilensteine)" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="5 5" dot={false} />}
                       <Line type="monotone" dataKey="ev" name="EV (Earned)" stroke="#10b981" strokeWidth={2} dot={false} connectNulls={false} />
+                      <Line type="monotone" dataKey="evProjection" name="EV (Prognose)" stroke="#10b981" strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls={false} />
                       <Line type="monotone" dataKey="ac" name="AC (Actual)" stroke="#f43f5e" strokeWidth={2} dot={false} connectNulls={false} />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -2396,8 +2700,8 @@ export default function EVMDashboardMultiProject() {
                       <h4 className="font-medium text-slate-900 mb-3">Planned Value Methode</h4>
                       <div className="flex gap-4">
                         {[
-                          { value: 'time-based', label: 'Zeitbasiert (automatisch)', desc: 'PV wird aus Epic Start/Ende-Daten berechnet' },
-                          { value: 'milestones', label: 'Meilensteine (manuell)', desc: 'PV wird aus manuellen Meilensteinen interpoliert' },
+                          { value: 'time-based', label: 'Zeitbasiert (automatisch)', desc: 'PV wird linear über die Epic-Dauer (Start- bis Enddatum) verteilt. Einfacher, aber weniger genau.' },
+                          { value: 'milestones', label: 'Manuell (PM setzt PV% pro Epic)', desc: 'Der PM definiert pro Stichtag, wie weit jedes Epic planmässig fertig sein sollte. Empfohlen bei ungleichmässigem Fortschritt.' },
                         ].map(opt => (
                           <button key={opt.value} onClick={() => updateProjectSettings({ pvMethod: opt.value })} disabled={isOffline}
                             className={`flex-1 p-4 rounded-lg border-2 text-left transition-all ${pvMethod === opt.value ? 'border-purple-500 bg-purple-50' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -2413,6 +2717,35 @@ export default function EVMDashboardMultiProject() {
                       <input type="date" value={reportingDate} onChange={(e) => updateProjectSettings({ reportingDate: e.target.value })} disabled={isOffline}
                         className="px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
                       <p className="text-xs text-slate-500 mt-1">Datum für PV-Berechnung. Default: heute.</p>
+                    </div>
+
+                    {/* Stage Gate (ANF-4) */}
+                    <div>
+                      <h4 className="font-medium text-slate-900 mb-3">Stage Gate</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="md:col-span-2">
+                          <label className="text-sm text-slate-500 block mb-1">Stage Gate Kriterium</label>
+                          <input type="text" value={projectSettings.stageGateCriterion || ''} placeholder="z.B. Akzeptanzrate KS-Team > 70%"
+                            onChange={(e) => updateProjectSettings({ stageGateCriterion: e.target.value })} disabled={isOffline}
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+                          <p className="text-xs text-slate-500 mt-1">Messbares Kriterium für den Stage Gate Entscheid.</p>
+                        </div>
+                        <div>
+                          <label className="text-sm text-slate-500 block mb-1">Status</label>
+                          <select value={projectSettings.stageGateStatus || 'open'}
+                            onChange={(e) => updateProjectSettings({ stageGateStatus: e.target.value })} disabled={isOffline}
+                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900">
+                            <option value="open">Offen</option>
+                            <option value="achieved">Erreicht</option>
+                            <option value="missed">Nicht erreicht</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-3">
+                        <label className="text-sm text-slate-500 block mb-1">Stage Gate Datum (optional, sonst Projekt-Enddatum)</label>
+                        <input type="date" value={projectSettings.stageGateDate || ''} onChange={(e) => updateProjectSettings({ stageGateDate: e.target.value })} disabled={isOffline}
+                          className="px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+                      </div>
                     </div>
 
                     <div>
@@ -2496,6 +2829,12 @@ export default function EVMDashboardMultiProject() {
                               onChange={(e) => updateCurrentProject({ jiraConfig: { ...currentProject?.jiraConfig, endDateField: e.target.value } })} disabled={isOffline}
                               className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm" />
                           </div>
+                          <div>
+                            <label className="text-sm text-slate-500 block mb-1">MoSCoW-Feld (optional)</label>
+                            <input type="text" value={currentProject?.jiraConfig?.moscowField || ''} placeholder="z.B. customfield_10100 oder priority"
+                              onChange={(e) => updateCurrentProject({ jiraConfig: { ...currentProject?.jiraConfig, moscowField: e.target.value } })} disabled={isOffline}
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm" />
+                          </div>
                         </div>
                       </details>
 
@@ -2570,13 +2909,13 @@ export default function EVMDashboardMultiProject() {
                     ]},
                     { title: 'Performance-Indizes', items: [
                       { term: 'SPI', full: 'Schedule Performance Index', desc: 'Termineffizienz: EV / PV. Wert > 1 = schneller als geplant, < 1 = langsamer. Ein SPI von 0.8 bedeutet: nur 80% der geplanten Arbeit wurde geschafft. Die SPI-Prognose auf dem Dashboard berechnet das projizierte Enddatum als: Startdatum + (geplante Dauer ÷ SPI).' },
-                      { term: 'CPI', full: 'Cost Performance Index', desc: 'Kosteneffizienz: EV / AC. Wert > 1 = günstiger als geplant, < 1 = teurer. Ein CPI von 1.2 bedeutet: für jeden investierten Franken wurde 1.20 CHF an Wert erzielt.' },
+                      { term: 'CPI', full: 'Cost Performance Index', desc: 'Kosteneffizienz: EV / AC. Wert > 1 = günstiger als geplant, < 1 = teurer. Ein CPI von 1.2 bedeutet: für jeden investierten Franken wurde 1.20 CHF an Wert erzielt. Die CPI-Prognose auf dem Dashboard zeigt die prognostizierten Gesamtkosten (EAC = BAC ÷ CPI) mit farbcodierter Budgetabweichung.' },
                       { term: 'TCPI', full: 'To Complete Performance Index', desc: 'Erforderliche Effizienz für den Rest: (BAC − EV) / (BAC − AC). Zeigt, wie effizient das restliche Budget eingesetzt werden muss, um im Plan zu bleiben. Wert > 1 = schwieriger.' },
                     ]},
                     { title: 'Prognosen', items: [
                       { term: 'EAC', full: 'Estimate at Completion', desc: 'Prognostizierte Gesamtkosten: BAC / CPI. Schätzt auf Basis der bisherigen Kosteneffizienz, was das Projekt am Ende tatsächlich kosten wird.' },
                       { term: 'ETC', full: 'Estimate to Complete', desc: 'Verbleibender Aufwand: EAC − AC. Zeigt, wie viel Budget oder Zeit noch benötigt wird, um das Projekt abzuschliessen.' },
-                      { term: 'Zeitprognose', full: 'Projiziertes Enddatum', desc: 'Zwei Methoden: SPI-Prognose berechnet das Enddatum als geplante Dauer ÷ SPI (Schedule Performance Index). FTE-Prognose nutzt den Restaufwand (BAC−EV in Stunden) geteilt durch Kapazität (Stunden/Woche × aktive FTEs bei 5-Tage-Woche). Beide werden dem geplanten Enddatum gegenübergestellt.' },
+                      { term: 'Zeitprognose', full: 'Projiziertes Enddatum & Budget', desc: 'Vier Karten: Geplantes Ende zeigt das Zieldatum. SPI-Prognose berechnet das Enddatum als geplante Dauer ÷ SPI. CPI-Prognose zeigt die prognostizierten Gesamtkosten (EAC) mit Budgetabweichung. FTE-Prognose nutzt den Restaufwand (BAC−EV) geteilt durch Kapazität (Stunden/Woche × aktive FTEs bei 5-Tage-Woche).' },
                     ]},
                     { title: 'S-Kurve', items: [
                       { term: 'S-Kurve', full: 'Kumulative Projektion', desc: 'Grafische Darstellung von PV, EV und AC über die Zeit. Der typische S-förmige Verlauf entsteht durch langsamen Start, steilen Anstieg in der Mitte und Abflachung am Ende.' },
@@ -2599,6 +2938,27 @@ export default function EVMDashboardMultiProject() {
                       { term: 'Feature', full: 'Arbeitspaket innerhalb eines Epics', desc: 'Optionale Unterteilung eines Epics in einzelne Arbeitspakete. Jedes Feature bekommt eigene PERT-Werte (O/M/P) und eine Rolle (= Kostensatz). Der Epic zeigt dann das Total aller Feature-Aufwände.' },
                       { term: 'Rolle', full: 'Kostensatz / Ressourcentyp', desc: 'Jede Rolle (z.B. Dev, QA, Design) hat einen Stundensatz. Features werden einer Rolle zugeordnet, um rollenbasierte Kostenberechnungen zu ermöglichen. Rollen werden im Tab "Rollen & Sätze" verwaltet.' },
                       { term: 'Feature-TE₉₅', full: 'Aufwand auf Feature-Ebene', desc: 'Wenn ein Epic Features hat, wird die PERT-Schätzung pro Feature berechnet (TE₉₅ = TE + 2×σ). Die Summer aller Feature-TE₉₅ ergibt den effektiven Gesamtaufwand des Epics.' },
+                    ]},
+                    { title: 'Governance & Ampelsystem', items: [
+                      { term: 'Ampel', full: 'SPI/CPI Schwellwerte', desc: 'Dreistufiges Ampelsystem für SPI und CPI: Grün (≥ 1.0) = On Track, Standard-Highlight-Report genügt. Gelb (0.9–1.0) = At Risk, Erwähnung im nächsten Highlight Report empfohlen. Rot (< 0.9) = Behind, sofortiger Exception Report an die GL erforderlich.' },
+                      { term: 'Exception Report', full: 'Eskalationsbericht an GL', desc: 'Wird ausgelöst wenn SPI < 0.9 oder CPI < 0.9. Das Dashboard zeigt ein rotes Alert-Banner mit den verletzten Werten. Gemäss Governance-Rhythmus muss der PM sofort einen Exception Report an die Geschäftsleitung erstellen.' },
+                      { term: 'Highlight Report', full: 'Regelmässiger Statusbericht', desc: 'Standardmässiger Projektstatusbericht im Governance-Rhythmus. Bei gelber Ampel (SPI/CPI zwischen 0.9 und 1.0) sollte die Abweichung im nächsten Highlight Report erwähnt werden.' },
+                    ]},
+                    { title: 'MoSCoW & Scope', items: [
+                      { term: 'MoSCoW', full: 'Priorisierungsmethode', desc: 'Priorisierung aller Epics in vier Kategorien: MUST (unverzichtbar), SHOULD (wichtig), COULD (wünschenswert), WON\'T (nicht in diesem Release). Basis für das Fix-or-Flex-Prinzip.' },
+                      { term: '60%-Regel', full: 'Must-Have Kapazitätslimit', desc: 'Must-Haves dürfen maximal 60% der Gesamtkapazität beanspruchen. Die restlichen 40% sind Flexibilität für SHOULD/COULD-Epics und Risikopuffer. Wird auf dem Dashboard und im Epics-Tab als MoSCoW Kapazitäts-Check angezeigt.' },
+                      { term: 'Fix or Flex', full: 'Scope-Management-Prinzip', desc: 'MUST-Epics sind fix (nicht verhandelbar), SHOULD/COULD sind flex (können verschoben werden). Voraussetzung: die 60%-Regel wird eingehalten. Bei Verzögerungen werden zuerst COULD, dann SHOULD-Epics herausgenommen.' },
+                    ]},
+                    { title: 'Stage Gate', items: [
+                      { term: 'Stage Gate', full: 'Phasen-Entscheidungspunkt', desc: 'Messbarer Meilenstein am Ende einer Projektphase. Drei Fragen werden geprüft: MVP geliefert? Business Case validiert? Was wurde gelernt? Das Kriterium wird in den Einstellungen definiert und auf dem Dashboard angezeigt.' },
+                      { term: 'Kriterium', full: 'Stage Gate Messkriterium', desc: 'Ein konkretes, messbares Kriterium für den Stage Gate Entscheid, z.B. "Akzeptanzrate KS-Team > 70%" oder "MVP Feature-Completeness 100%". Wird in den Projekteinstellungen als Freitext hinterlegt.' },
+                      { term: 'Status', full: 'Stage Gate Bewertung', desc: 'Drei mögliche Zustände: Offen (noch nicht geprüft), Erreicht (Kriterium erfüllt, Phase kann abgeschlossen werden), Nicht erreicht (Kriterium verfehlt, Massnahmen nötig).' },
+                    ]},
+                    { title: 'Kostenprognose', items: [
+                      { term: 'BAC', full: 'Budget at Completion (Prognose)', desc: 'Im Prognose-Block auf dem Dashboard: das Gesamtbudget als Referenzwert. Identisch mit dem BAC-Grundwert, hier im Kontext der Budgetprognose dargestellt.' },
+                      { term: 'EAC', full: 'Estimate at Completion (Prognose)', desc: 'Prognostizierte Gesamtkosten auf Basis des bisherigen CPI: BAC / CPI. Wird grün angezeigt wenn unter Budget (EAC < BAC), rot wenn über Budget.' },
+                      { term: 'VAC', full: 'Variance at Completion (Prognose)', desc: 'Prognostizierte Budgetabweichung am Ende: BAC − EAC. Positiver Wert = unter Budget (grün), negativer Wert = über Budget (rot). Zeigt die CHF-Konsequenz der aktuellen Performance.' },
+                      { term: 'ETC', full: 'Estimate to Complete (Prognose)', desc: 'Verbleibender Aufwand: EAC − AC. Beantwortet die Frage "Was brauchen wir noch?" in CHF oder Stunden.' },
                     ]},
                     { title: 'Baseline & Scope', items: [
                       { term: 'Baseline', full: 'Referenz-Snapshot', desc: 'Ein gespeicherter Zustand aller Epics zu einem bestimmten Zeitpunkt. Dient als Vergleichsbasis — neue Epics nach der Baseline werden als Scope-Änderung erkannt.' },

@@ -87,3 +87,9 @@ alter table features enable row level security;
 create policy "Allow all" on features for all using (true) with check (true);
 create trigger features_updated_at before update on features
   for each row execute function update_updated_at();
+
+-- MoSCoW-Priorisierung: Kategorie, Phase, Priorität, Bemerkung
+ALTER TABLE epics ADD COLUMN IF NOT EXISTS moscow text;
+ALTER TABLE epics ADD COLUMN IF NOT EXISTS phase text;
+ALTER TABLE epics ADD COLUMN IF NOT EXISTS priority integer;
+ALTER TABLE epics ADD COLUMN IF NOT EXISTS remarks text NOT NULL DEFAULT '';

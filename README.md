@@ -41,13 +41,35 @@ Earned Value Management Dashboard for tracking multiple projects with PERT estim
 - Portfolio-Uebersicht mit Fortschritts-Badges
 - Projekt-spezifische Einstellungen, Rollen und Meilensteine
 
+### MoSCoW-Priorisierung
+- **MUST / SHOULD / COULD / WON'T** — Farbcodierte Dropdown-Spalte direkt in der Epics-Tabelle
+- **Kapazitaets-Check (60%-Regel)** — Automatische Pruefung ob MUST-Haves ≤ 60% des Gesamtaufwands
+- Stundensummen pro Kategorie basierend auf PERT-Schaetzung (`getEffectiveEstimate`)
+- Hinweis auf Epics ohne MoSCoW-Zuordnung
+- Optional: MoSCoW-Wert aus Jira Custom Field synchronisieren
+
+### Governance & Ampelsystem
+- **Dreistufige Ampel** — Gruen (≥ 1.0), Gelb (0.9–1.0), Rot (< 0.9) fuer SPI und CPI
+- **Exception Report Alert** — Rotes Banner bei SPI/CPI < 0.9, sofortiger Bericht an GL erforderlich
+- **Highlight Report Hinweis** — Dezenter gelber Hinweis bei Gelb-Status
+
+### Kostenprognose
+- **BAC / EAC / VAC / ETC** — Kompakter Prognose-Block auf dem Dashboard
+- Farbcodierte Anzeige: gruen bei "Unter Budget", rot bei "Ueber Budget"
+- CHF-Konsequenz der aktuellen Performance auf einen Blick
+
+### Stage Gate
+- **Stage Gate Kriterium** — Messbares Kriterium in den Einstellungen definieren
+- **Status-Tracking** — Offen / Erreicht / Nicht erreicht
+- **Dashboard-Anzeige** — Kriterium, Status-Badge und Zieldatum auf dem Dashboard
+
 ### Weitere Features
-- **Jira-Integration** — Epics aus Jira importieren und synchronisieren
+- **Jira-Integration** — Epics aus Jira importieren und synchronisieren (inkl. MoSCoW-Feld)
 - **Baseline Management** — Snapshots setzen, Scope Changes erkennen
 - **Kostensaetze / Rollen** — Rollenbasierte Stundensaetze (Dev, QA, Design...)
 - **Meilensteine** — Meilensteinbasierte PV-Berechnung
 - **Offline-Faehig** — Lokale Demo-Daten, Supabase optional
-- **EVM Glossar** — Integrierte Erklaerung aller Begriffe
+- **EVM Glossar** — Integrierte Erklaerung aller Begriffe inkl. Governance, MoSCoW, Stage Gate
 
 ## Tech Stack
 
@@ -86,6 +108,28 @@ Das Dashboard startet mit Demo-Daten und funktioniert sofort ohne Backend.
    VITE_SUPABASE_ANON_KEY=your-anon-key
    ```
 4. Dev Server neu starten
+
+### Deployment auf Shared Hosting (LAMP)
+
+Die App ist eine statische SPA — kein Node.js auf dem Server noetig.
+
+1. Lokal bauen:
+   ```bash
+   npx vite build
+   ```
+2. Inhalt von `dist/` per FTP/SFTP auf den Webserver hochladen
+3. Fertig — Supabase laeuft als Cloud-Dienst, die Verbindung geht direkt vom Browser zur Supabase-API
+
+Optional `.htaccess` fuer saubere URLs (nicht zwingend noetig, da die App Tab-basiert navigiert):
+
+```apache
+RewriteEngine On
+RewriteBase /
+RewriteRule ^index\.html$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.html [L]
+```
 
 ## Projektstruktur
 

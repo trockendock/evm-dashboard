@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Area, ComposedChart } from 'recharts';
 import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Clock, Target, DollarSign, Activity, FileSpreadsheet, BarChart3, Settings, X, Cloud, Zap, Filter, Database, GitMerge, Calendar, Lock, Unlock, FolderOpen, Plus, Trash2, ChevronDown, Copy, Wifi, WifiOff, RefreshCw, Flag, Calculator, HelpCircle } from 'lucide-react';
 import { supabase } from './lib/supabase';
@@ -10,6 +11,8 @@ const getIssueRate = (issue, rates, defaultRateId) => {
   const rateId = issue.rateId || defaultRateId;
   return rates.find(r => r.id === rateId)?.rate || 0;
 };
+
+const slugify = (text) => text.toLowerCase().replace(/[äöüé]/g, c => ({ ä: 'ae', ö: 'oe', ü: 'ue', é: 'e' }[c] || c)).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 const formatCurrency = (amount, currency) => {
   return `${currency} ${amount.toLocaleString('de-CH', { maximumFractionDigits: 0 })}`;
@@ -384,6 +387,7 @@ const mapFeatureToDb = (updates) => {
 const mapProjectFromDb = (row) => ({
   id: row.id,
   name: row.name,
+  slug: slugify(row.name),
   settings: row.settings || {},
   jiraConfig: row.jira_config || {},
   rates: row.rates || [],
@@ -675,10 +679,44 @@ export default function EVMDashboardMultiProject() {
   const [projects, setProjects] = useState([]);
   const [epics, setEpics] = useState([]);
   const [projectEpicsMap, setProjectEpicsMap] = useState({});
-  const [currentProjectId, setCurrentProjectId] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // URL-based routing (slug-based)
+  const { projectSlug: urlSlug, tab: urlTab } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const VALID_TABS = ['dashboard', 'epics', 'pert', 'milestones', 'metrics', 'rates', 'settings', 'help'];
+
+  const [currentProjectId, setCurrentProjectIdState] = useState(null);
+  const activeTab = VALID_TABS.includes(urlTab) ? urlTab : 'dashboard';
+  const showPortfolio = location.pathname === '/portfolio';
+
+  // Helper: get slug for a project (by id or from projects array)
+  const getSlug = useCallback((id) => {
+    const p = projects.find(p => p.id === id);
+    return p?.slug || slugify(p?.name || '');
+  }, [projects]);
+
+  const setCurrentProjectId = useCallback((id) => {
+    setCurrentProjectIdState(id);
+    const p = projects.find(p => p.id === id);
+    if (p) navigate(`/project/${p.slug}/${activeTab}`);
+  }, [navigate, activeTab, projects]);
+
+  const setActiveTab = useCallback((tab) => {
+    const slug = getSlug(currentProjectId);
+    if (slug) navigate(`/project/${slug}/${tab}`);
+  }, [navigate, currentProjectId, getSlug]);
+
+  const setShowPortfolio = useCallback((show) => {
+    if (show) {
+      navigate('/portfolio');
+    } else {
+      const slug = getSlug(currentProjectId);
+      if (slug) navigate(`/project/${slug}/${activeTab}`);
+    }
+  }, [navigate, currentProjectId, activeTab, getSlug]);
+
   const [statusFilter, setStatusFilter] = useState('all');
-  const [showPortfolio, setShowPortfolio] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isOffline, setIsOffline] = useState(!supabase);
   const [showRoles, setShowRoles] = useState(false);
@@ -688,6 +726,37 @@ export default function EVMDashboardMultiProject() {
   const [jiraSyncing, setJiraSyncing] = useState(false);
   const [features, setFeatures] = useState([]);
   const [expandedEpicIds, setExpandedEpicIds] = useState(new Set());
+
+  // Sync URL slug → state (browser back/forward)
+  useEffect(() => {
+    if (urlSlug && projects.length > 0) {
+      const matched = projects.find(p => p.slug === urlSlug);
+      if (matched && matched.id !== currentProjectId) {
+        setCurrentProjectIdState(matched.id);
+      } else if (!matched) {
+        navigate(`/project/${projects[0].slug}/dashboard`, { replace: true });
+      }
+    }
+  }, [urlSlug, projects]);
+
+  // Helper to pick and navigate to initial project
+  const pickInitialProject = useCallback((projectList, fallbackId) => {
+    // If URL already has a valid project slug, use it
+    if (urlSlug) {
+      const matched = projectList.find(p => p.slug === urlSlug);
+      if (matched) {
+        setCurrentProjectIdState(matched.id);
+        return;
+      }
+    }
+    // Otherwise pick fallback and update URL
+    const id = fallbackId && projectList.find(p => p.id === fallbackId) ? fallbackId : projectList[0]?.id;
+    if (id) {
+      setCurrentProjectIdState(id);
+      const p = projectList.find(p => p.id === id);
+      if (!showPortfolio && p) navigate(`/project/${p.slug}/dashboard`, { replace: true });
+    }
+  }, [urlSlug, navigate, showPortfolio]);
 
   // Load projects
   useEffect(() => {
@@ -702,7 +771,7 @@ export default function EVMDashboardMultiProject() {
             const parsed = JSON.parse(cached);
             setProjects(parsed.projects || []);
             setProjectEpicsMap(parsed.epicsMap || {});
-            if (parsed.projects?.length > 0) setCurrentProjectId(parsed.currentId || parsed.projects[0].id);
+            if (parsed.projects?.length > 0) pickInitialProject(parsed.projects, parsed.currentId);
           }
           setIsOffline(true);
           setLoading(false);
@@ -714,12 +783,12 @@ export default function EVMDashboardMultiProject() {
           if (cancelled) return;
           const mapped = seeded.map(mapProjectFromDb);
           setProjects(mapped);
-          if (mapped.length > 0) setCurrentProjectId(mapped[0].id);
+          if (mapped.length > 0) pickInitialProject(mapped, null);
         } else {
           const mapped = data.map(mapProjectFromDb);
           setProjects(mapped);
           const savedId = localStorage.getItem('evm_current_project');
-          setCurrentProjectId(savedId && mapped.find(p => p.id === savedId) ? savedId : mapped[0]?.id);
+          pickInitialProject(mapped, savedId);
         }
         setIsOffline(false);
       } catch (err) {
@@ -730,7 +799,7 @@ export default function EVMDashboardMultiProject() {
           const parsed = JSON.parse(cached);
           setProjects(parsed.projects || []);
           setProjectEpicsMap(parsed.epicsMap || {});
-          if (parsed.projects?.length > 0) setCurrentProjectId(parsed.currentId || parsed.projects[0].id);
+          if (parsed.projects?.length > 0) pickInitialProject(parsed.projects, parsed.currentId);
         }
         setIsOffline(true);
       }
@@ -1552,7 +1621,7 @@ export default function EVMDashboardMultiProject() {
               <button onClick={() => setShowPortfolio(!showPortfolio)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${showPortfolio ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}><BarChart3 className="w-4 h-4" />Portfolio</button>
               <ProjectSelector
                 projects={projects} currentProjectId={currentProjectId}
-                onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }}
+                onSelectProject={(id) => { setCurrentProjectIdState(id); const p = projects.find(p => p.id === id); if (p) navigate(`/project/${p.slug}/dashboard`); }}
                 onCreateProject={createProject} onDeleteProject={deleteProject} onDuplicateProject={duplicateProject}
               />
             </div>
@@ -1587,7 +1656,7 @@ export default function EVMDashboardMultiProject() {
 
       <main className="max-w-screen-2xl mx-auto px-6 py-8">
         {showPortfolio ? (
-          <PortfolioOverview projects={projects} projectEpicsMap={projectEpicsMap} onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }} />
+          <PortfolioOverview projects={projects} projectEpicsMap={projectEpicsMap} onSelectProject={(id) => { setCurrentProjectIdState(id); const p = projects.find(p => p.id === id); if (p) navigate(`/project/${p.slug}/dashboard`); }} />
         ) : (
           <>
             {/* ====== DASHBOARD ====== */}

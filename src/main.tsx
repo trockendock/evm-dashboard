@@ -3,17 +3,22 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './style.css'
 import App from './App.jsx'
+import AuthGate from './AuthGate'
 
 createRoot(document.getElementById('app')!).render(
   <StrictMode>
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/portfolio" replace />} />
-        <Route path="/portfolio" element={<App />} />
-        <Route path="/project/:projectSlug" element={<App />} />
-        <Route path="/project/:projectSlug/:tab" element={<App />} />
-        <Route path="*" element={<Navigate to="/portfolio" replace />} />
-      </Routes>
+      <AuthGate>
+        {({ onLogout }) => (
+          <Routes>
+            <Route path="/" element={<Navigate to="/portfolio" replace />} />
+            <Route path="/portfolio" element={<App onLogout={onLogout} />} />
+            <Route path="/project/:projectSlug" element={<App onLogout={onLogout} />} />
+            <Route path="/project/:projectSlug/:tab" element={<App onLogout={onLogout} />} />
+            <Route path="*" element={<Navigate to="/portfolio" replace />} />
+          </Routes>
+        )}
+      </AuthGate>
     </BrowserRouter>
   </StrictMode>,
 )

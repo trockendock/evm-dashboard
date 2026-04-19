@@ -3,7 +3,6 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Area, ComposedChart } from 'recharts';
 import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Clock, Target, DollarSign, Activity, FileSpreadsheet, BarChart3, Settings, X, Cloud, Zap, Filter, Database, GitMerge, Calendar, Lock, Unlock, FolderOpen, Plus, Trash2, ChevronDown, Copy, Wifi, WifiOff, RefreshCw, Flag, Calculator, HelpCircle, LogOut } from 'lucide-react';
 import { supabase } from './lib/supabase';
-import LoginPage from './components/LoginPage';
 
 // ============================================
 // RATE HELPERS
@@ -676,30 +675,8 @@ const PortfolioOverview = ({ projects, projectEpicsMap, onSelectProject }) => {
 // ============================================
 // MAIN APP
 // ============================================
-export default function EVMDashboardMultiProject() {
-  // ---- Auth State ----
-  const [session, setSession] = useState(undefined); // undefined=loading, null=logged out, object=logged in
-  useEffect(() => {
-    if (!supabase) { setSession('offline'); return; }
-    supabase.auth.getSession().then(({ data: { session: s } }) => setSession(s));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Auth guard: show login if not authenticated (skip in offline mode)
-  if (session === undefined) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 text-purple-600 animate-spin mx-auto mb-4" />
-          <p className="text-slate-600">Session wird geprüft...</p>
-        </div>
-      </div>
-    );
-  }
-  if (session === null) return <LoginPage />;
-
-  const handleLogout = async () => { if (supabase) await supabase.auth.signOut(); };
+export default function EVMDashboardMultiProject({ onLogout = async () => {} }) {
+  const handleLogout = onLogout;
 
   const [projects, setProjects] = useState([]);
   const [epics, setEpics] = useState([]);

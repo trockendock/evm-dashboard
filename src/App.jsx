@@ -209,7 +209,7 @@ const sampleProjectDefs = [
   {
     name: 'Web Portal Redesign',
     settings: { startDate: '2025-01-06', endDate: '2025-04-30', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 150 },
       { id: 'rate-2', name: 'Extern (QA)', rate: 120 },
@@ -235,7 +235,7 @@ const sampleProjectDefs = [
   {
     name: 'Mobile App v2',
     settings: { startDate: '2025-02-01', endDate: '2025-06-30', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 140 },
     ],
@@ -254,7 +254,7 @@ const sampleProjectDefs = [
   {
     name: 'API Gateway Migration',
     settings: { startDate: '2025-01-15', endDate: '2025-05-15', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 160 },
       { id: 'rate-2', name: 'Cloud Ops', rate: 180 },
@@ -521,6 +521,72 @@ const PerformanceGauge = ({ value, label }) => {
       </div>
       <span className="text-slate-600 text-sm mt-2 cursor-help underline decoration-dashed decoration-slate-400 underline-offset-2" title={tooltipText}>{label}</span>
       <span className="text-xs text-slate-400 mt-0.5">{gaugeDescriptions[label]}</span>
+    </div>
+  );
+};
+
+// ============================================
+// JIRA TOKEN FIELD
+// ============================================
+const JiraTokenField = ({ tokenSet, disabled, onSave, onDelete }) => {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSave = async () => {
+    if (!value || value.length < 4) { setError('Token zu kurz'); return; }
+    setBusy(true); setError('');
+    const res = await onSave(value);
+    setBusy(false);
+    if (res?.error) { setError(res.error); return; }
+    setValue(''); setEditing(false);
+  };
+
+  const handleDelete = async () => {
+    setBusy(true); setError('');
+    const res = await onDelete();
+    setBusy(false);
+    if (res?.error) setError(res.error);
+  };
+
+  if (!editing && tokenSet) {
+    return (
+      <div className="flex items-center gap-2">
+        <div className="flex-1 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-700 flex items-center gap-2">
+          <CheckCircle className="w-4 h-4" /> Token gespeichert
+        </div>
+        <button type="button" onClick={() => setEditing(true)} disabled={disabled || busy}
+          className="px-3 py-2 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 rounded-lg">
+          Ändern
+        </button>
+        <button type="button" onClick={handleDelete} disabled={disabled || busy}
+          className="px-3 py-2 text-sm text-rose-600 hover:text-rose-700 border border-rose-200 rounded-lg">
+          Entfernen
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <input type="password" placeholder="Jira API Token" value={value} autoComplete="new-password"
+          onChange={(e) => setValue(e.target.value)} disabled={disabled || busy}
+          className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+        <button type="button" onClick={handleSave} disabled={disabled || busy || !value}
+          className="px-3 py-2 text-sm bg-purple-600 hover:bg-purple-500 text-white rounded-lg disabled:opacity-50">
+          {busy ? 'Speichert…' : 'Speichern'}
+        </button>
+        {tokenSet && (
+          <button type="button" onClick={() => { setEditing(false); setValue(''); setError(''); }} disabled={busy}
+            className="px-3 py-2 text-sm text-slate-500 hover:text-slate-700">
+            Abbrechen
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-600 mt-1">{error}</p>}
+      <p className="text-xs text-slate-400 mt-1">Der Token wird serverseitig gespeichert und nie wieder an den Browser zurückgegeben.</p>
     </div>
   );
 };
@@ -876,7 +942,7 @@ export default function EVMDashboardMultiProject({ onLogout = async () => {} }) 
     const projData = {
       name,
       settings: { startDate: new Date().toISOString().split('T')[0], endDate: '', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-      jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', statusMapping: {}, autoSync: false },
+      jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', statusMapping: {}, autoSync: false },
       rates: [{ id: 'rate-1', name: 'Standard', rate: 0 }],
       baselines: [],
       milestones: [],
@@ -1004,12 +1070,12 @@ export default function EVMDashboardMultiProject({ onLogout = async () => {} }) 
 
   const jiraSync = useCallback(async () => {
     const config = currentProject?.jiraConfig;
-    if (!config?.domain || !config?.email || !config?.apiToken || !config?.initiativeKey) return;
+    if (!config?.domain || !config?.email || !config?.tokenSet || !config?.initiativeKey) return;
     setJiraSyncing(true);
     try {
       const { data, error } = await supabase.functions.invoke('jira-proxy', {
         body: {
-          domain: config.domain, email: config.email, apiToken: config.apiToken,
+          projectId: currentProjectId,
           jql: `issue in linkedIssues("${config.initiativeKey}", "${config.linkTypeName || 'is part of'}")`,
           fields: `summary,status,${config.startDateField || 'customfield_10015'},${config.endDateField || 'duedate'},timeoriginalestimate,timespent${config.moscowField ? ',' + config.moscowField : ''}`,
         },
@@ -1064,6 +1130,28 @@ export default function EVMDashboardMultiProject({ onLogout = async () => {} }) 
       setJiraSyncing(false);
     }
   }, [currentProject, epics, currentProjectId, updateEpic, updateCurrentProject]);
+
+  const saveJiraToken = useCallback(async (apiToken) => {
+    if (!supabase || !currentProjectId) return { error: 'Kein Projekt ausgewählt' };
+    const { data, error } = await supabase.functions.invoke('jira-save-credentials', {
+      body: { projectId: currentProjectId, apiToken },
+    });
+    if (error || data?.error) return { error: error?.message || data?.error || 'Speichern fehlgeschlagen' };
+    setProjects(prev => prev.map(p => p.id === currentProjectId
+      ? { ...p, jiraConfig: { ...(p.jiraConfig || {}), tokenSet: true } } : p));
+    return { ok: true };
+  }, [currentProjectId]);
+
+  const deleteJiraToken = useCallback(async () => {
+    if (!supabase || !currentProjectId) return { error: 'Kein Projekt ausgewählt' };
+    const { data, error } = await supabase.functions.invoke('jira-save-credentials', {
+      body: { projectId: currentProjectId, action: 'delete' },
+    });
+    if (error || data?.error) return { error: error?.message || data?.error || 'Löschen fehlgeschlagen' };
+    setProjects(prev => prev.map(p => p.id === currentProjectId
+      ? { ...p, jiraConfig: { ...(p.jiraConfig || {}), tokenSet: false } } : p));
+    return { ok: true };
+  }, [currentProjectId]);
 
   const toggleBaselineLock = (epicId) => {
     const epic = epics.find(e => e.id === epicId);
@@ -2872,9 +2960,12 @@ export default function EVMDashboardMultiProject({ onLogout = async () => {} }) 
                         </div>
                         <div>
                           <label className="text-sm text-slate-500 block mb-1">API Token</label>
-                          <input type="password" placeholder="••••••••" value={currentProject?.jiraConfig?.apiToken || ''}
-                            onChange={(e) => updateCurrentProject({ jiraConfig: { ...currentProject?.jiraConfig, apiToken: e.target.value } })} disabled={isOffline}
-                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+                          <JiraTokenField
+                            tokenSet={!!currentProject?.jiraConfig?.tokenSet}
+                            disabled={isOffline}
+                            onSave={saveJiraToken}
+                            onDelete={deleteJiraToken}
+                          />
                         </div>
                         <div>
                           <label className="text-sm text-slate-500 block mb-1">Initiative Key</label>

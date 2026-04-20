@@ -177,13 +177,13 @@ export async function revalidate(
       const task = (async (): Promise<PromiseSettledResult<void>> => {
         try {
           await limit(async () => {
-            onProgress({ projectId: project.id, status: 'syncing' });
-
             const token = await tokenPromise;
             if (token === null) {
-              // Already reported via tokenPromise catch above
+              // Error already reported via tokenPromise.catch above
               return;
             }
+
+            onProgress({ projectId: project.id, status: 'syncing' });
 
             const jql = project.jql_override ?? buildDefaultJql(project.project_key);
 
@@ -212,11 +212,13 @@ export async function revalidate(
               mapIssueToTicket(issue, project.id, projectOverrides),
             );
 
-            // Upsert and delete stale in parallel
-            await Promise.all([
-              upsertTickets(tickets),
-              deleteStaleTickets(project.id, tickets.map((t) => t.issue_key)),
-            ]);
+            // Upsert tickets, then clean up stale ones independently
+            await upsertTickets(tickets);
+            const activeKeys = tickets.map((t) => t.issue_key);
+            const deleteResult = await Promise.allSettled([deleteStaleTickets(project.id, activeKeys)]);
+            if (deleteResult[0].status === 'rejected') {
+              console.warn(`[kanban] deleteStaleTickets failed for ${project.project_key}:`, deleteResult[0].reason);
+            }
 
             onProgress({ projectId: project.id, status: 'done' });
           });

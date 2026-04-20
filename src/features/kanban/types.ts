@@ -103,6 +103,7 @@ export interface JiraRawIssue {
         };
       };
     } | null;
+    updated: string | null;
     /** Epic link via custom field (classic projects) */
     customfield_10014: string | null;
   };

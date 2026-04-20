@@ -113,7 +113,7 @@ export async function searchIssues(
       jql,
       startAt: String(startAt),
       maxResults: '100',
-      fields: 'summary,status,priority,issuetype,assignee,duedate,parent,customfield_10014',
+      fields: 'summary,status,priority,issuetype,assignee,duedate,updated,parent,customfield_10014',
     },
   );
 }

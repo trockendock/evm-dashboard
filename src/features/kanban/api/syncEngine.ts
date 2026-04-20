@@ -69,7 +69,7 @@ export function mapIssueToTicket(
     epic_name: fields.parent?.fields.summary ?? null,
     epic_color: null,
     due_date: fields.duedate,
-    jira_updated_at: null,
+    jira_updated_at: fields.updated ?? null,
     synced_at: new Date().toISOString(),
     raw: issue,
   };

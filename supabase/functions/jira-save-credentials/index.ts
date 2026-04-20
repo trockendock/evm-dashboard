@@ -29,45 +29,40 @@ serve(async (req) => {
     const { data: { user } } = await userClient.auth.getUser();
     if (!user) return json({ error: 'Unauthorized' }, 401);
 
-    const { projectId, jql, fields } = await req.json();
-    if (!projectId || !jql) return json({ error: 'Missing fields' }, 400);
+    const { projectId, apiToken, action } = await req.json();
+    if (!projectId) return json({ error: 'Missing projectId' }, 400);
 
-    // Ownership-Check + domain/email aus jira_config laden (RLS greift)
+    // Ownership via RLS sichern
     const { data: proj, error: projErr } = await userClient
       .from('projects')
-      .select('owner_id, jira_config')
+      .select('id, jira_config')
       .eq('id', projectId)
       .single();
     if (projErr || !proj) return json({ error: 'Project not found' }, 404);
 
-    const domain = proj.jira_config?.domain;
-    const email = proj.jira_config?.email;
-    if (!domain || !email) return json({ error: 'Jira-Konfiguration unvollständig' }, 400);
-
-    // Token via service_role (RLS-Bypass)
     const admin = createClient(supabaseUrl, serviceKey);
-    const { data: cred } = await admin
-      .from('jira_credentials')
-      .select('api_token')
-      .eq('project_id', projectId)
-      .single();
-    if (!cred?.api_token) return json({ error: 'Kein Jira-Token gespeichert' }, 400);
 
-    const auth = btoa(`${email}:${cred.api_token}`);
-    const url = `https://${domain}/rest/api/3/search?jql=${encodeURIComponent(jql)}&fields=${encodeURIComponent(fields || 'summary,status')}&maxResults=100`;
-
-    const response = await fetch(url, {
-      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
-    });
-    const data = await response.json();
-
-    if (!response.ok) {
-      return json(
-        { error: data.errorMessages?.[0] || 'Jira API error', status: response.status },
-        response.status,
-      );
+    if (action === 'delete') {
+      await admin.from('jira_credentials').delete().eq('project_id', projectId);
+      const newConfig = { ...(proj.jira_config || {}) };
+      delete newConfig.tokenSet;
+      await admin.from('projects').update({ jira_config: newConfig }).eq('id', projectId);
+      return json({ ok: true, tokenSet: false });
     }
-    return json(data);
+
+    if (typeof apiToken !== 'string' || apiToken.length < 4) {
+      return json({ error: 'Token zu kurz' }, 400);
+    }
+
+    const { error: upsertErr } = await admin
+      .from('jira_credentials')
+      .upsert({ project_id: projectId, api_token: apiToken, updated_at: new Date().toISOString() });
+    if (upsertErr) return json({ error: upsertErr.message }, 500);
+
+    const newConfig = { ...(proj.jira_config || {}), tokenSet: true };
+    await admin.from('projects').update({ jira_config: newConfig }).eq('id', projectId);
+
+    return json({ ok: true, tokenSet: true });
   } catch (err) {
     return json({ error: (err as Error).message }, 500);
   }

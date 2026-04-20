@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Area, ComposedChart } from 'recharts';
-import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Clock, Target, DollarSign, Activity, FileSpreadsheet, BarChart3, Settings, X, Cloud, Zap, Filter, Database, GitMerge, Calendar, Lock, Unlock, FolderOpen, Plus, Trash2, ChevronDown, Copy, Wifi, WifiOff, RefreshCw, Flag, Calculator, HelpCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Clock, Target, DollarSign, Activity, FileSpreadsheet, BarChart3, Settings, X, Cloud, Zap, Filter, Database, GitMerge, Calendar, Lock, Unlock, FolderOpen, Plus, Trash2, ChevronDown, Copy, Wifi, WifiOff, RefreshCw, Flag, Calculator, HelpCircle, LogOut } from 'lucide-react';
 import { supabase } from './lib/supabase';
 
 // ============================================
@@ -10,6 +11,8 @@ const getIssueRate = (issue, rates, defaultRateId) => {
   const rateId = issue.rateId || defaultRateId;
   return rates.find(r => r.id === rateId)?.rate || 0;
 };
+
+const slugify = (text) => text.toLowerCase().replace(/[äöüé]/g, c => ({ ä: 'ae', ö: 'oe', ü: 'ue', é: 'e' }[c] || c)).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 const formatCurrency = (amount, currency) => {
   return `${currency} ${amount.toLocaleString('de-CH', { maximumFractionDigits: 0 })}`;
@@ -206,7 +209,7 @@ const sampleProjectDefs = [
   {
     name: 'Web Portal Redesign',
     settings: { startDate: '2025-01-06', endDate: '2025-04-30', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 150 },
       { id: 'rate-2', name: 'Extern (QA)', rate: 120 },
@@ -232,7 +235,7 @@ const sampleProjectDefs = [
   {
     name: 'Mobile App v2',
     settings: { startDate: '2025-02-01', endDate: '2025-06-30', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 140 },
     ],
@@ -251,7 +254,7 @@ const sampleProjectDefs = [
   {
     name: 'API Gateway Migration',
     settings: { startDate: '2025-01-15', endDate: '2025-05-15', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-    jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
+    jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', startDateField: 'customfield_10015', endDateField: 'duedate', statusMapping: {}, autoSync: false },
     rates: [
       { id: 'rate-1', name: 'Intern', rate: 160 },
       { id: 'rate-2', name: 'Cloud Ops', rate: 180 },
@@ -384,6 +387,7 @@ const mapFeatureToDb = (updates) => {
 const mapProjectFromDb = (row) => ({
   id: row.id,
   name: row.name,
+  slug: slugify(row.name),
   settings: row.settings || {},
   jiraConfig: row.jira_config || {},
   rates: row.rates || [],
@@ -517,6 +521,72 @@ const PerformanceGauge = ({ value, label }) => {
       </div>
       <span className="text-slate-600 text-sm mt-2 cursor-help underline decoration-dashed decoration-slate-400 underline-offset-2" title={tooltipText}>{label}</span>
       <span className="text-xs text-slate-400 mt-0.5">{gaugeDescriptions[label]}</span>
+    </div>
+  );
+};
+
+// ============================================
+// JIRA TOKEN FIELD
+// ============================================
+const JiraTokenField = ({ tokenSet, disabled, onSave, onDelete }) => {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSave = async () => {
+    if (!value || value.length < 4) { setError('Token zu kurz'); return; }
+    setBusy(true); setError('');
+    const res = await onSave(value);
+    setBusy(false);
+    if (res?.error) { setError(res.error); return; }
+    setValue(''); setEditing(false);
+  };
+
+  const handleDelete = async () => {
+    setBusy(true); setError('');
+    const res = await onDelete();
+    setBusy(false);
+    if (res?.error) setError(res.error);
+  };
+
+  if (!editing && tokenSet) {
+    return (
+      <div className="flex items-center gap-2">
+        <div className="flex-1 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-700 flex items-center gap-2">
+          <CheckCircle className="w-4 h-4" /> Token gespeichert
+        </div>
+        <button type="button" onClick={() => setEditing(true)} disabled={disabled || busy}
+          className="px-3 py-2 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 rounded-lg">
+          Ändern
+        </button>
+        <button type="button" onClick={handleDelete} disabled={disabled || busy}
+          className="px-3 py-2 text-sm text-rose-600 hover:text-rose-700 border border-rose-200 rounded-lg">
+          Entfernen
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <input type="password" placeholder="Jira API Token" value={value} autoComplete="new-password"
+          onChange={(e) => setValue(e.target.value)} disabled={disabled || busy}
+          className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+        <button type="button" onClick={handleSave} disabled={disabled || busy || !value}
+          className="px-3 py-2 text-sm bg-purple-600 hover:bg-purple-500 text-white rounded-lg disabled:opacity-50">
+          {busy ? 'Speichert…' : 'Speichern'}
+        </button>
+        {tokenSet && (
+          <button type="button" onClick={() => { setEditing(false); setValue(''); setError(''); }} disabled={busy}
+            className="px-3 py-2 text-sm text-slate-500 hover:text-slate-700">
+            Abbrechen
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-600 mt-1">{error}</p>}
+      <p className="text-xs text-slate-400 mt-1">Der Token wird serverseitig gespeichert und nie wieder an den Browser zurückgegeben.</p>
     </div>
   );
 };
@@ -671,14 +741,50 @@ const PortfolioOverview = ({ projects, projectEpicsMap, onSelectProject }) => {
 // ============================================
 // MAIN APP
 // ============================================
-export default function EVMDashboardMultiProject() {
+export default function EVMDashboardMultiProject({ onLogout = async () => {} }) {
+  const handleLogout = onLogout;
+
   const [projects, setProjects] = useState([]);
   const [epics, setEpics] = useState([]);
   const [projectEpicsMap, setProjectEpicsMap] = useState({});
-  const [currentProjectId, setCurrentProjectId] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // URL-based routing (slug-based)
+  const { projectSlug: urlSlug, tab: urlTab } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const VALID_TABS = ['dashboard', 'epics', 'pert', 'milestones', 'metrics', 'rates', 'settings', 'help'];
+
+  const [currentProjectId, setCurrentProjectIdState] = useState(null);
+  const activeTab = VALID_TABS.includes(urlTab) ? urlTab : 'dashboard';
+  const showPortfolio = location.pathname === '/portfolio';
+
+  // Helper: get slug for a project (by id or from projects array)
+  const getSlug = useCallback((id) => {
+    const p = projects.find(p => p.id === id);
+    return p?.slug || slugify(p?.name || '');
+  }, [projects]);
+
+  const setCurrentProjectId = useCallback((id) => {
+    setCurrentProjectIdState(id);
+    const p = projects.find(p => p.id === id);
+    if (p) navigate(`/project/${p.slug}/${activeTab}`);
+  }, [navigate, activeTab, projects]);
+
+  const setActiveTab = useCallback((tab) => {
+    const slug = getSlug(currentProjectId);
+    if (slug) navigate(`/project/${slug}/${tab}`);
+  }, [navigate, currentProjectId, getSlug]);
+
+  const setShowPortfolio = useCallback((show) => {
+    if (show) {
+      navigate('/portfolio');
+    } else {
+      const slug = getSlug(currentProjectId);
+      if (slug) navigate(`/project/${slug}/${activeTab}`);
+    }
+  }, [navigate, currentProjectId, activeTab, getSlug]);
+
   const [statusFilter, setStatusFilter] = useState('all');
-  const [showPortfolio, setShowPortfolio] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isOffline, setIsOffline] = useState(!supabase);
   const [showRoles, setShowRoles] = useState(false);
@@ -688,6 +794,37 @@ export default function EVMDashboardMultiProject() {
   const [jiraSyncing, setJiraSyncing] = useState(false);
   const [features, setFeatures] = useState([]);
   const [expandedEpicIds, setExpandedEpicIds] = useState(new Set());
+
+  // Sync URL slug → state (browser back/forward)
+  useEffect(() => {
+    if (urlSlug && projects.length > 0) {
+      const matched = projects.find(p => p.slug === urlSlug);
+      if (matched && matched.id !== currentProjectId) {
+        setCurrentProjectIdState(matched.id);
+      } else if (!matched) {
+        navigate(`/project/${projects[0].slug}/dashboard`, { replace: true });
+      }
+    }
+  }, [urlSlug, projects]);
+
+  // Helper to pick and navigate to initial project
+  const pickInitialProject = useCallback((projectList, fallbackId) => {
+    // If URL already has a valid project slug, use it
+    if (urlSlug) {
+      const matched = projectList.find(p => p.slug === urlSlug);
+      if (matched) {
+        setCurrentProjectIdState(matched.id);
+        return;
+      }
+    }
+    // Otherwise pick fallback and update URL
+    const id = fallbackId && projectList.find(p => p.id === fallbackId) ? fallbackId : projectList[0]?.id;
+    if (id) {
+      setCurrentProjectIdState(id);
+      const p = projectList.find(p => p.id === id);
+      if (!showPortfolio && p) navigate(`/project/${p.slug}/dashboard`, { replace: true });
+    }
+  }, [urlSlug, navigate, showPortfolio]);
 
   // Load projects
   useEffect(() => {
@@ -702,7 +839,7 @@ export default function EVMDashboardMultiProject() {
             const parsed = JSON.parse(cached);
             setProjects(parsed.projects || []);
             setProjectEpicsMap(parsed.epicsMap || {});
-            if (parsed.projects?.length > 0) setCurrentProjectId(parsed.currentId || parsed.projects[0].id);
+            if (parsed.projects?.length > 0) pickInitialProject(parsed.projects, parsed.currentId);
           }
           setIsOffline(true);
           setLoading(false);
@@ -714,12 +851,12 @@ export default function EVMDashboardMultiProject() {
           if (cancelled) return;
           const mapped = seeded.map(mapProjectFromDb);
           setProjects(mapped);
-          if (mapped.length > 0) setCurrentProjectId(mapped[0].id);
+          if (mapped.length > 0) pickInitialProject(mapped, null);
         } else {
           const mapped = data.map(mapProjectFromDb);
           setProjects(mapped);
           const savedId = localStorage.getItem('evm_current_project');
-          setCurrentProjectId(savedId && mapped.find(p => p.id === savedId) ? savedId : mapped[0]?.id);
+          pickInitialProject(mapped, savedId);
         }
         setIsOffline(false);
       } catch (err) {
@@ -730,7 +867,7 @@ export default function EVMDashboardMultiProject() {
           const parsed = JSON.parse(cached);
           setProjects(parsed.projects || []);
           setProjectEpicsMap(parsed.epicsMap || {});
-          if (parsed.projects?.length > 0) setCurrentProjectId(parsed.currentId || parsed.projects[0].id);
+          if (parsed.projects?.length > 0) pickInitialProject(parsed.projects, parsed.currentId);
         }
         setIsOffline(true);
       }
@@ -805,7 +942,7 @@ export default function EVMDashboardMultiProject() {
     const projData = {
       name,
       settings: { startDate: new Date().toISOString().split('T')[0], endDate: '', currency: 'CHF', defaultRateId: 'rate-1', pvMethod: 'time-based', reportingDate: new Date().toISOString().split('T')[0] },
-      jira_config: { domain: '', email: '', apiToken: '', initiativeKey: '', linkTypeName: 'is part of', statusMapping: {}, autoSync: false },
+      jira_config: { domain: '', email: '', initiativeKey: '', linkTypeName: 'is part of', statusMapping: {}, autoSync: false },
       rates: [{ id: 'rate-1', name: 'Standard', rate: 0 }],
       baselines: [],
       milestones: [],
@@ -933,12 +1070,12 @@ export default function EVMDashboardMultiProject() {
 
   const jiraSync = useCallback(async () => {
     const config = currentProject?.jiraConfig;
-    if (!config?.domain || !config?.email || !config?.apiToken || !config?.initiativeKey) return;
+    if (!config?.domain || !config?.email || !config?.tokenSet || !config?.initiativeKey) return;
     setJiraSyncing(true);
     try {
       const { data, error } = await supabase.functions.invoke('jira-proxy', {
         body: {
-          domain: config.domain, email: config.email, apiToken: config.apiToken,
+          projectId: currentProjectId,
           jql: `issue in linkedIssues("${config.initiativeKey}", "${config.linkTypeName || 'is part of'}")`,
           fields: `summary,status,${config.startDateField || 'customfield_10015'},${config.endDateField || 'duedate'},timeoriginalestimate,timespent${config.moscowField ? ',' + config.moscowField : ''}`,
         },
@@ -993,6 +1130,28 @@ export default function EVMDashboardMultiProject() {
       setJiraSyncing(false);
     }
   }, [currentProject, epics, currentProjectId, updateEpic, updateCurrentProject]);
+
+  const saveJiraToken = useCallback(async (apiToken) => {
+    if (!supabase || !currentProjectId) return { error: 'Kein Projekt ausgewählt' };
+    const { data, error } = await supabase.functions.invoke('jira-save-credentials', {
+      body: { projectId: currentProjectId, apiToken },
+    });
+    if (error || data?.error) return { error: error?.message || data?.error || 'Speichern fehlgeschlagen' };
+    setProjects(prev => prev.map(p => p.id === currentProjectId
+      ? { ...p, jiraConfig: { ...(p.jiraConfig || {}), tokenSet: true } } : p));
+    return { ok: true };
+  }, [currentProjectId]);
+
+  const deleteJiraToken = useCallback(async () => {
+    if (!supabase || !currentProjectId) return { error: 'Kein Projekt ausgewählt' };
+    const { data, error } = await supabase.functions.invoke('jira-save-credentials', {
+      body: { projectId: currentProjectId, action: 'delete' },
+    });
+    if (error || data?.error) return { error: error?.message || data?.error || 'Löschen fehlgeschlagen' };
+    setProjects(prev => prev.map(p => p.id === currentProjectId
+      ? { ...p, jiraConfig: { ...(p.jiraConfig || {}), tokenSet: false } } : p));
+    return { ok: true };
+  }, [currentProjectId]);
 
   const toggleBaselineLock = (epicId) => {
     const epic = epics.find(e => e.id === epicId);
@@ -1550,9 +1709,10 @@ export default function EVMDashboardMultiProject() {
                 <GitMerge className="w-5 h-5 text-white" />
               </div>
               <button onClick={() => setShowPortfolio(!showPortfolio)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${showPortfolio ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}><BarChart3 className="w-4 h-4" />Portfolio</button>
+              <Link to="/kanban" className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all bg-slate-100 text-slate-700 hover:bg-slate-200">Kanban</Link>
               <ProjectSelector
                 projects={projects} currentProjectId={currentProjectId}
-                onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }}
+                onSelectProject={(id) => { setCurrentProjectIdState(id); const p = projects.find(p => p.id === id); if (p) navigate(`/project/${p.slug}/dashboard`); }}
                 onCreateProject={createProject} onDeleteProject={deleteProject} onDuplicateProject={duplicateProject}
               />
             </div>
@@ -1566,6 +1726,11 @@ export default function EVMDashboardMultiProject() {
                 }`}>
                   {evmMetrics.spi >= 1 && evmMetrics.cpi >= 1 ? '✓ On Track' : evmMetrics.spi >= 0.9 && evmMetrics.cpi >= 0.9 ? '⚠ At Risk' : '✗ Behind'}
                 </span>
+              )}
+              {session && session !== 'offline' && (
+                <button onClick={handleLogout} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-all" title="Abmelden">
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
               )}
             </div>
           </div>
@@ -1587,7 +1752,7 @@ export default function EVMDashboardMultiProject() {
 
       <main className="max-w-screen-2xl mx-auto px-6 py-8">
         {showPortfolio ? (
-          <PortfolioOverview projects={projects} projectEpicsMap={projectEpicsMap} onSelectProject={(id) => { setCurrentProjectId(id); setShowPortfolio(false); }} />
+          <PortfolioOverview projects={projects} projectEpicsMap={projectEpicsMap} onSelectProject={(id) => { setCurrentProjectIdState(id); const p = projects.find(p => p.id === id); if (p) navigate(`/project/${p.slug}/dashboard`); }} />
         ) : (
           <>
             {/* ====== DASHBOARD ====== */}
@@ -2796,9 +2961,12 @@ export default function EVMDashboardMultiProject() {
                         </div>
                         <div>
                           <label className="text-sm text-slate-500 block mb-1">API Token</label>
-                          <input type="password" placeholder="••••••••" value={currentProject?.jiraConfig?.apiToken || ''}
-                            onChange={(e) => updateCurrentProject({ jiraConfig: { ...currentProject?.jiraConfig, apiToken: e.target.value } })} disabled={isOffline}
-                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-900" />
+                          <JiraTokenField
+                            tokenSet={!!currentProject?.jiraConfig?.tokenSet}
+                            disabled={isOffline}
+                            onSave={saveJiraToken}
+                            onDelete={deleteJiraToken}
+                          />
                         </div>
                         <div>
                           <label className="text-sm text-slate-500 block mb-1">Initiative Key</label>

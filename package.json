@@ -6,22 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:ui": "vitest --ui"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
+    "@vitest/ui": "^4.1.4",
+    "jsdom": "^29.0.2",
     "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^4.1.4"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.100.1",
     "lucide-react": "^1.7.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.2",
     "recharts": "^3.8.1"
   }
 }

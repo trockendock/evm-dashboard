@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useKanbanBoard } from '../hooks/useKanbanBoard';
 import type { BoardFilters, StatusCategory, Ticket } from '../types';
@@ -34,7 +34,7 @@ const CATEGORY_LABEL: Record<StatusCategory, string> = {
 };
 
 export function List(): React.JSX.Element {
-  const { tickets, instances, projects, syncProgress, lastSyncAt, syncing, error, refresh } =
+  const { tickets, instances, projects, lastSyncAt, syncing, error, refresh } =
     useKanbanBoard();
 
   const [filters, setFilters] = useState<BoardFilters>(EMPTY_FILTERS);
@@ -42,38 +42,40 @@ export function List(): React.JSX.Element {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
   // Build lookup maps
-  const instanceMap = new Map(instances.map((i) => [i.id, i]));
-  const projectMap = new Map(projects.map((p) => [p.id, p]));
+  const instanceMap = useMemo(() => new Map(instances.map((i) => [i.id, i])), [instances]);
+  const projectMap = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
   // Apply filters
-  const searchLower = filters.search.toLowerCase();
-  const filteredTickets = tickets.filter((ticket) => {
-    if (
-      searchLower &&
-      !ticket.issue_key.toLowerCase().includes(searchLower) &&
-      !(ticket.summary ?? '').toLowerCase().includes(searchLower)
-    ) {
-      return false;
-    }
+  const filteredTickets = useMemo(() => {
+    const searchLower = filters.search.toLowerCase();
+    return tickets.filter((ticket) => {
+      if (
+        searchLower &&
+        !ticket.issue_key.toLowerCase().includes(searchLower) &&
+        !(ticket.summary ?? '').toLowerCase().includes(searchLower)
+      ) {
+        return false;
+      }
 
-    if (filters.instanceIds.length > 0) {
-      const project = projectMap.get(ticket.board_project_id);
-      if (!project || !filters.instanceIds.includes(project.instance_id)) return false;
-    }
+      if (filters.instanceIds.length > 0) {
+        const project = projectMap.get(ticket.board_project_id);
+        if (!project || !filters.instanceIds.includes(project.instance_id)) return false;
+      }
 
-    if (filters.projectIds.length > 0 && !filters.projectIds.includes(ticket.board_project_id)) {
-      return false;
-    }
+      if (filters.projectIds.length > 0 && !filters.projectIds.includes(ticket.board_project_id)) {
+        return false;
+      }
 
-    if (
-      filters.assignees.length > 0 &&
-      !filters.assignees.includes(ticket.assignee_name ?? '')
-    ) {
-      return false;
-    }
+      if (
+        filters.assignees.length > 0 &&
+        !filters.assignees.includes(ticket.assignee_name ?? '')
+      ) {
+        return false;
+      }
 
-    return true;
-  });
+      return true;
+    });
+  }, [tickets, filters, projectMap]);
 
   // Sorting helper
   function getTicketSortValue(ticket: Ticket, key: SortKey): string {
@@ -108,12 +110,16 @@ export function List(): React.JSX.Element {
     }
   }
 
-  const sortedTickets = [...filteredTickets].sort((a, b) => {
-    const av = getTicketSortValue(a, sortKey);
-    const bv = getTicketSortValue(b, sortKey);
-    const cmp = av.localeCompare(bv);
-    return sortDir === 'asc' ? cmp : -cmp;
-  });
+  const sortedTickets = useMemo(
+    () =>
+      [...filteredTickets].sort((a, b) => {
+        const av = getTicketSortValue(a, sortKey);
+        const bv = getTicketSortValue(b, sortKey);
+        const cmp = av.localeCompare(bv);
+        return sortDir === 'asc' ? cmp : -cmp;
+      }),
+    [filteredTickets, sortKey, sortDir],
+  );
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {
@@ -163,14 +169,10 @@ export function List(): React.JSX.Element {
     { key: 'updated', label: 'Aktualisiert' },
   ];
 
-  // Mark syncProgress usage to avoid unused variable warning
-  void syncProgress;
-
   return (
     <div className="flex flex-col h-full">
       <BoardFiltersBar
         instances={instances}
-        projects={projects}
         tickets={tickets}
         filters={filters}
         onChange={setFilters}
@@ -229,7 +231,7 @@ export function List(): React.JSX.Element {
                       <span
                         className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full"
                         style={{
-                          backgroundColor: instance.color + '20',
+                          backgroundColor: `color-mix(in srgb, ${instance.color} 15%, transparent)`,
                           color: instance.color,
                         }}
                       >
@@ -326,7 +328,7 @@ export function List(): React.JSX.Element {
                       <span
                         className="text-xs px-1.5 py-0.5 rounded-full font-medium truncate max-w-24 inline-block"
                         style={{
-                          backgroundColor: (ticket.epic_color ?? '#6366f1') + '20',
+                          backgroundColor: `color-mix(in srgb, ${ticket.epic_color ?? '#6366f1'} 15%, transparent)`,
                           color: ticket.epic_color ?? '#6366f1',
                         }}
                         title={ticket.epic_name ?? ticket.epic_key}

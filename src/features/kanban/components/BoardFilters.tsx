@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import type { BoardFilters, BoardProject, JiraInstance, Ticket } from '../types';
+import type { BoardFilters, JiraInstance, Ticket } from '../types';
 
 interface BoardFiltersProps {
   instances: JiraInstance[];
-  projects: BoardProject[];
   tickets: Ticket[];
   filters: BoardFilters;
   onChange: (f: BoardFilters) => void;

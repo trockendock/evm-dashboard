@@ -85,13 +85,30 @@ export function InstanceForm() {
   }
 
   async function handleTest() {
-    if (!form.host || !form.email || !form.token) {
-      setTestStatus({ kind: 'err', msg: 'Host, E-Mail und API-Token sind erforderlich.' });
+    if (!form.host || !form.email) {
+      setTestStatus({ kind: 'err', msg: 'Host und E-Mail sind erforderlich.' });
+      return;
+    }
+    // When editing without re-entering the token, decrypt and use the stored one
+    let plainToken = form.token;
+    if (!plainToken && form.id) {
+      const existing = instances.find((i) => i.id === form.id);
+      if (existing) {
+        try {
+          plainToken = await (await import('../api/crypto')).decrypt(existing.api_token_encrypted);
+        } catch {
+          setTestStatus({ kind: 'err', msg: 'Token konnte nicht entschlüsselt werden.' });
+          return;
+        }
+      }
+    }
+    if (!plainToken) {
+      setTestStatus({ kind: 'err', msg: 'API-Token ist erforderlich.' });
       return;
     }
     setTestStatus({ kind: 'testing' });
     try {
-      const me = await getMyself(form.host, form.email, form.token);
+      const me = await getMyself(form.host, form.email, plainToken);
       setTestStatus({ kind: 'ok', name: me.displayName });
     } catch (err) {
       setTestStatus({ kind: 'err', msg: String(err) });

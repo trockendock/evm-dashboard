@@ -25,7 +25,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const OVERRIDE_OPTIONS: Array<{ value: StatusCategory | ''; label: string }> = [
-  { value: '', label: 'Standard (Jira)' },
+  { value: '', label: 'Standard' },
   { value: 'todo', label: 'Zu erledigen' },
   { value: 'in_progress', label: 'In Bearbeitung' },
   { value: 'done', label: 'Erledigt' },

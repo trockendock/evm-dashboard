@@ -30,14 +30,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
   const [boardProjects, setBoardProjects] = useState<BoardProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [boardProjectsError, setBoardProjectsError] = useState<string | null>(null);
 
   // Load board projects when switching to the Overrides or Projekte tab
   useEffect(() => {
     if (activeTab === 'overrides' || activeTab === 'projekte') {
       setProjectsLoading(true);
+      setBoardProjectsError(null);
       getBoardProjects()
         .then(setBoardProjects)
-        .catch(() => {/* silently ignore – errors shown per-component */})
+        .catch((err) => setBoardProjectsError(`Projekte konnten nicht geladen werden: ${String(err)}`))
         .finally(() => setProjectsLoading(false));
     }
   }, [activeTab]);
@@ -136,6 +138,8 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 <Loader2 className="w-4 h-4 animate-spin" />
                 Lade…
               </div>
+            ) : boardProjectsError ? (
+              <p className="text-sm text-red-600">{boardProjectsError}</p>
             ) : (
               <StatusOverrideEditor projects={boardProjects} instances={instances} />
             )}

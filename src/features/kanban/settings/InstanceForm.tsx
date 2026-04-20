@@ -10,7 +10,7 @@ import {
   upsertInstance,
   deleteInstance,
 } from '../api/supabaseRepo';
-import { encrypt } from '../api/crypto';
+import { encrypt, decrypt } from '../api/crypto';
 import { getMyself } from '../api/jiraEndpoints';
 import type { JiraInstance } from '../types';
 
@@ -95,7 +95,7 @@ export function InstanceForm() {
       const existing = instances.find((i) => i.id === form.id);
       if (existing) {
         try {
-          plainToken = await (await import('../api/crypto')).decrypt(existing.api_token_encrypted);
+          plainToken = await decrypt(existing.api_token_encrypted);
         } catch {
           setTestStatus({ kind: 'err', msg: 'Token konnte nicht entschlüsselt werden.' });
           return;

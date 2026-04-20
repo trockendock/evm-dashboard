@@ -56,6 +56,12 @@ export async function getKey(pepper: string): Promise<CryptoKey> {
  * Encrypts a plaintext string with AES-GCM.
  * Returns a base64-encoded string in the format `iv:ciphertext`.
  */
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 export async function encrypt(plaintext: string): Promise<string> {
   const pepper = getPepper();
   const key = await getKey(pepper);
@@ -68,8 +74,8 @@ export async function encrypt(plaintext: string): Promise<string> {
     enc.encode(plaintext),
   );
 
-  const ivB64 = btoa(String.fromCharCode(...iv));
-  const ctB64 = btoa(String.fromCharCode(...new Uint8Array(cipherBuffer)));
+  const ivB64 = toBase64(iv);
+  const ctB64 = toBase64(new Uint8Array(cipherBuffer));
   return `${ivB64}:${ctB64}`;
 }
 

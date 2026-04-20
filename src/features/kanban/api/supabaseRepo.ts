@@ -34,12 +34,12 @@ export async function getInstances(): Promise<JiraInstance[]> {
 }
 
 export async function upsertInstance(
-  data: Omit<JiraInstance, 'id' | 'created_at'>,
+  data: Omit<JiraInstance, 'created_at'> & { id?: string },
 ): Promise<JiraInstance> {
   assertClient(supabase);
   const { data: row, error } = await supabase
     .from('jira_instances')
-    .upsert(data)
+    .upsert(data, { onConflict: 'id' })
     .select()
     .single();
   if (error) throw error;
@@ -76,12 +76,12 @@ export async function getBoardProjects(instanceId?: string): Promise<BoardProjec
 }
 
 export async function upsertBoardProject(
-  data: Omit<BoardProject, 'id' | 'created_at'>,
+  data: Omit<BoardProject, 'created_at'> & { id?: string },
 ): Promise<BoardProject> {
   assertClient(supabase);
   const { data: row, error } = await supabase
     .from('jira_board_projects')
-    .upsert(data)
+    .upsert(data, { onConflict: 'instance_id,project_key' })
     .select()
     .single();
   if (error) throw error;

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS jira_instances (
 
 ALTER TABLE jira_instances ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "allow all on jira_instances" ON jira_instances;
 CREATE POLICY "allow all on jira_instances"
   ON jira_instances
   AS PERMISSIVE
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS jira_board_projects (
 
 ALTER TABLE jira_board_projects ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "allow all on jira_board_projects" ON jira_board_projects;
 CREATE POLICY "allow all on jira_board_projects"
   ON jira_board_projects
   AS PERMISSIVE
@@ -60,6 +62,7 @@ CREATE TABLE IF NOT EXISTS jira_status_overrides (
 
 ALTER TABLE jira_status_overrides ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "allow all on jira_status_overrides" ON jira_status_overrides;
 CREATE POLICY "allow all on jira_status_overrides"
   ON jira_status_overrides
   AS PERMISSIVE
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS jira_tickets_cache (
 
 ALTER TABLE jira_tickets_cache ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "allow all on jira_tickets_cache" ON jira_tickets_cache;
 CREATE POLICY "allow all on jira_tickets_cache"
   ON jira_tickets_cache
   AS PERMISSIVE

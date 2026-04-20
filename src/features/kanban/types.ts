@@ -56,6 +56,7 @@ export interface Ticket {
   due_date: string | null;
   jira_updated_at: string | null;
   synced_at: string;
+  raw?: unknown;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Area, ComposedChart } from 'recharts';
 import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Clock, Target, DollarSign, Activity, FileSpreadsheet, BarChart3, Settings, X, Cloud, Zap, Filter, Database, GitMerge, Calendar, Lock, Unlock, FolderOpen, Plus, Trash2, ChevronDown, Copy, Wifi, WifiOff, RefreshCw, Flag, Calculator, HelpCircle, LogOut } from 'lucide-react';
 import { supabase } from './lib/supabase';
@@ -1709,6 +1709,7 @@ export default function EVMDashboardMultiProject({ onLogout = async () => {} }) 
                 <GitMerge className="w-5 h-5 text-white" />
               </div>
               <button onClick={() => setShowPortfolio(!showPortfolio)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${showPortfolio ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}><BarChart3 className="w-4 h-4" />Portfolio</button>
+              <Link to="/kanban" className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all bg-slate-100 text-slate-700 hover:bg-slate-200">Kanban</Link>
               <ProjectSelector
                 projects={projects} currentProjectId={currentProjectId}
                 onSelectProject={(id) => { setCurrentProjectIdState(id); const p = projects.find(p => p.id === id); if (p) navigate(`/project/${p.slug}/dashboard`); }}

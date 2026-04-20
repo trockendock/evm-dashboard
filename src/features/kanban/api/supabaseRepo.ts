@@ -182,6 +182,6 @@ export async function deleteStaleTickets(
     .from('jira_tickets_cache')
     .delete()
     .eq('board_project_id', boardProjectId)
-    .not('issue_key', 'in', `(${activeKeys.map((k) => `"${k}"`).join(',')})`);
+    .not('issue_key', 'in', `(${activeKeys.join(',')})`);
   if (error) throw error;
 }

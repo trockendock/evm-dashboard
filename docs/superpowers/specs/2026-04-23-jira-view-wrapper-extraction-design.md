@@ -256,17 +256,20 @@ Ships in `reference-backend/supabase/`. Not part of the published npm bundle. An
 
 ### Edge Functions
 
-**`jira-admin`** — single handler, routes on an `action` field. Replaces EVM's `jira-save-credentials` and `jira-proxy`, plus adds snapshot writing.
+**`jira-admin`** — single Edge Function that routes on `request.url` pathname to implement the three admin endpoints from §4. Replaces EVM's `jira-save-credentials` and `jira-proxy`, plus adds snapshot writing.
 
 ```
-POST /functions/v1/jira-admin
-Body: { action: "saveConfig" | "setToken" | "deleteToken" | "sync", projectId, … }
+POST /functions/v1/jira-admin/config   → §4 POST /config
+POST /functions/v1/jira-admin/token    → §4 POST /token
+POST /functions/v1/jira-admin/sync     → §4 POST /sync
 ```
 
-Responsibilities:
-- `saveConfig` — validate JiraConfig shape, upsert into `jira_configs` (RLS ownership check).
-- `setToken` / `deleteToken` — same semantics as EVM's current `jira-save-credentials`. Service-role writes `jira_credentials`. Token never leaves the server.
-- `sync`:
+So `<jira-admin-panel api-base="https://xyz.functions.supabase.co/jira-admin" …>` appends `/config`, `/token`, `/sync` per action. The HTTP contract stays path-based; collapsing into one Edge Function is a Supabase-specific internal detail that does not leak to the contract.
+
+Responsibilities per path:
+- `/config` — validate JiraConfig shape, upsert into `jira_configs` (RLS ownership check).
+- `/token` — same semantics as EVM's current `jira-save-credentials`. Dispatches on the request body's `action: "set" | "delete"`. Service-role writes `jira_credentials`. Token never leaves the server.
+- `/sync`:
   1. Verify JWT + ownership (RLS on `jira_configs`).
   2. Load config + token.
   3. Call Jira `/rest/api/3/search` with JQL `issue in linkedIssues("{initiativeKey}", "{linkTypeName}")`.
@@ -403,7 +406,7 @@ Publish via GitHub Actions on git tag push. CI checks:
 
 ### Unit tests (`tests/unit/`)
 
-- **Runner:** `vitest` + `@web/test-runner` (real browser — Shadow DOM needs real DOM).
+- **Runner:** `@web/test-runner` (real browser — Shadow DOM needs real DOM; jsdom's Shadow DOM implementation is incomplete and produces false confidence).
 - **Focus:** attribute → rendered state, event emission, error states, snapshot rendering.
 - Tests query Shadow DOM directly (regressions in scoping/theming are caught).
 

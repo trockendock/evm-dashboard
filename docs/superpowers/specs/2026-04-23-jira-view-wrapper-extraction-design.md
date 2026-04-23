@@ -283,9 +283,8 @@ Responsibilities per path:
 GET /functions/v1/jira-snapshot/:projectId
 ```
 
-- Reads `jira_snapshots` with anon key. Row's `is_public = true` enforced by RLS via join to `jira_configs`.
-- 404 if the project doesn't exist or has never synced.
-- 410 if `is_public = false`.
+- Reads `jira_snapshots` with anon key. Row visibility is enforced via a `SECURITY DEFINER` helper `is_project_public(uuid)` that the `jira_snapshots` RLS policy calls — the helper bypasses RLS on `jira_configs` so the anon role never needs any read privilege on the config table.
+- 404 for any case where the snapshot isn't publicly visible: unknown project, `is_public = false`, or not yet synced. The §4 contract permits 410 for the "private" case, but the reference backend deliberately unifies on 404 to avoid leaking the existence of private projects (a standard security property for public enumeration endpoints). Alternative backends that don't care about the enumeration leak MAY return 410.
 - `Cache-Control: public, max-age=30, stale-while-revalidate=300`.
 
 ### SQL migrations
@@ -320,13 +319,20 @@ create table jira_snapshots (
   synced_at timestamptz default now()
 );
 alter table jira_snapshots enable row level security;
+
+-- SECURITY DEFINER helper bypasses RLS on jira_configs so the
+-- jira_snapshots policy can check is_public without granting anon any
+-- read privilege on the config table (which holds domain, email, etc.).
+create or replace function public.is_project_public(p uuid)
+  returns boolean
+  language sql security definer stable
+  set search_path = public
+  as $$ select coalesce(is_public, false) from jira_configs where project_id = p $$;
+revoke all on function public.is_project_public(uuid) from public;
+grant execute on function public.is_project_public(uuid) to anon, authenticated;
+
 create policy "public read when enabled" on jira_snapshots
-  for select using (
-    exists (
-      select 1 from jira_configs c
-      where c.project_id = jira_snapshots.project_id and c.is_public = true
-    )
-  );
+  for select using (public.is_project_public(project_id));
 -- writes: service_role only
 ```
 
